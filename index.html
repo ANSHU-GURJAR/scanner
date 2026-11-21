@@ -4,31 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#eb1000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>DocScan</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://unpkg.com">
+<link rel="preconnect" href="https://cdnjs.cloudflare.com">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="preconnect" href="https://docs.opencv.org">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
-<script src="https://unpkg.com/pdf-lib-plus-encrypt/dist/pdf-lib.min.js"></script>
-<script>window.PDFLib||document.write('<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"><\/script>')</script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script>
-/* OpenCV loader with fallbacks */
-(function(){
-  var u=['https://docs.opencv.org/4.8.0/opencv.js','https://docs.opencv.org/4.x/opencv.js','https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js'],i=0;
-  function next(){if(i>=u.length)return;var s=document.createElement('script');s.async=true;s.src=u[i++];s.onerror=function(){s.remove();next()};document.head.appendChild(s)}
-  next();
-})();
-</script>
 <style>
-body{font-family:Inter,system-ui,sans-serif;background:#f6f7fb;-webkit-tap-highlight-color:transparent}
+body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#f6f7fb;-webkit-tap-highlight-color:transparent;touch-action:manipulation;overscroll-behavior-y:none;-webkit-text-size-adjust:100%}
 .no-scrollbar::-webkit-scrollbar{display:none}.no-scrollbar{scrollbar-width:none}
 .tab{padding:.45rem .9rem;border-radius:.75rem;font-size:.8rem;font-weight:600;background:#fff;border:1px solid #e2e8f0;color:#475569;white-space:nowrap;transition:all .15s}
 .tab.on{background:linear-gradient(135deg,#ff4b3a,#d90b00);color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(235,16,0,.3)}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-.fade{animation:fadeUp .35s ease both}
+.fade{animation:fadeUp .3s ease both}
 @keyframes scan{0%{top:10%}100%{top:86%}}
 .scanline{position:absolute;left:12%;right:12%;height:3px;border-radius:3px;background:linear-gradient(90deg,transparent,#22c55e,transparent);box-shadow:0 0 18px #22c55e;animation:scan 1.8s ease-in-out infinite alternate}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -46,20 +39,41 @@ body{font-family:Inter,system-ui,sans-serif;background:#f6f7fb;-webkit-tap-highl
 (function(){
   var d=document.getElementById('diag');
   function show(m){d.style.display='block';d.textContent+=m+'\n'}
-  window.addEventListener('error',function(e){if(e.message)show('Error: '+e.message)});
+  window.addEventListener('error',function(e){
+    var t=e.target;
+    if(t&&t.tagName==='SCRIPT'){if(!t.dataset.lazy)show('Failed to load: '+t.src);return}
+    if(e.message)show('Error: '+e.message)
+  },true);
   window.addEventListener('unhandledrejection',function(e){show('Promise error: '+((e.reason&&e.reason.message)||e.reason))});
   setTimeout(function(){
     var miss=[];
-    [['React',window.React],['ReactDOM',window.ReactDOM],['Babel',window.Babel],['PDFLib',window.PDFLib],['pdfjsLib',window.pdfjsLib],['Tesseract',window.Tesseract]].forEach(function(x){if(!x[1])miss.push(x[0])});
+    [['React',window.React],['ReactDOM',window.ReactDOM],['Babel',window.Babel]].forEach(function(x){if(!x[1])miss.push(x[0])});
     if(miss.length)show('Missing libraries: '+miss.join(', ')+'\n(CDN blocked, ad-blocker/VPN on, or no internet)');
     var r=document.getElementById('root');
-    if(r&&r.textContent.indexOf('Loading DocScan')>-1)show('App did not start. Open Console (F12) to see the Babel/React error.');
-  },10000);
+    if(r&&r.textContent.indexOf('Loading DocScan')>-1)show('App did not start. Open Console (F12) to see the error.');
+  },15000);
 })();
 </script>
 <script type="text/babel" data-presets="react">
-const {useState,useEffect,useRef}=React;
-pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const {useState,useEffect,useRef,useMemo}=React;
+
+/* ---------- lazy library loader (PDF / OCR libs load only when needed) ---------- */
+const LIBS={
+ pdfjs:{n:'PDF reader',u:['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'],ok:()=>window.pdfjsLib,init:u=>{pdfjsLib.GlobalWorkerOptions.workerSrc=u.replace('pdf.min.js','pdf.worker.min.js')}},
+ pdflib:{n:'PDF builder',u:['https://unpkg.com/pdf-lib-plus-encrypt/dist/pdf-lib.min.js','https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js','https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'],ok:()=>window.PDFLib},
+ tess:{n:'OCR engine',u:['https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'],ok:()=>window.Tesseract}};
+const libP={};
+const need=k=>libP[k]||(libP[k]=new Promise((res,rej)=>{
+  const L=LIBS[k];let i=0;
+  const next=()=>{
+    if(L.ok()){res();return}
+    if(i>=L.u.length){libP[k]=null;rej(new Error(L.n+' failed to load. Check your internet connection.'));return}
+    const url=L.u[i++],s=document.createElement('script');s.async=true;s.dataset.lazy='1';s.src=url;
+    s.onload=()=>{if(L.ok()){if(L.init)L.init(url);res()}else{s.remove();next()}};
+    s.onerror=()=>{s.remove();next()};document.head.appendChild(s);
+  };
+  next();
+}));
 
 /* ---------- helpers ---------- */
 const $c=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c};
@@ -68,103 +82,326 @@ const toBlob=(c,t='image/jpeg',q=.9)=>new Promise(r=>c.toBlob(r,t,q));
 const dl=(blob,name)=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000)};
 const share=async(blob,name)=>{const f=new File([blob],name,{type:'application/pdf'});
   if(navigator.canShare&&navigator.canShare({files:[f]})){try{await navigator.share({files:[f],title:name})}catch(e){if(e.name!=='AbortError')throw e}return true}return false};
+const nextFrame=()=>new Promise(r=>{let d=false;const f=()=>{if(!d){d=true;r()}};requestAnimationFrame(()=>setTimeout(f,0));setTimeout(f,100)});
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
+const kill=m=>{try{if(m&&!m.isDeleted())m.delete()}catch(e){}};
+
+/* OpenCV loads AFTER the first screen is shown (it is ~10 MB) */
+const CV_SRC=['https://docs.opencv.org/4.8.0/opencv.js','https://docs.opencv.org/4.x/opencv.js','https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js'];
 let cvP=null;
-const cvReady=()=>cvP||(cvP=new Promise((res,rej)=>{let n=0,asked=false;const t=setInterval(()=>{const c=window.cv;
-  if(c&&c.Mat){clearInterval(t);res()}
-  else if(c&&typeof c.then==='function'&&!asked){asked=true;c.then(m=>{if(m&&m.Mat)window.cv=m})}
-  else if(++n>1200){clearInterval(t);cvP=null;rej(new Error('OpenCV.js failed to load. Check your internet connection.'))}},50)}));
+const cvReady=()=>cvP||(cvP=new Promise((res,rej)=>{
+  let i=0,n=0,asked=false;
+  const addScript=()=>{if(i>=CV_SRC.length)return;const s=document.createElement('script');s.async=true;s.dataset.lazy='1';s.src=CV_SRC[i++];s.onerror=()=>{s.remove();addScript()};document.head.appendChild(s)};
+  if(!(window.cv&&(window.cv.Mat||typeof window.cv.then==='function')))addScript();
+  const t=setInterval(()=>{const c=window.cv;
+    if(c&&c.Mat){clearInterval(t);res()}
+    else if(c&&typeof c.then==='function'&&!asked){asked=true;c.then(m=>{if(m&&m.Mat)window.cv=m})}
+    else if(++n>2400){clearInterval(t);cvP=null;rej(new Error('OpenCV.js failed to load. Check your internet connection.'))}},50);
+}));
 
 const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
   return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
-const fullFrame=c=>{const i=.02,W=c.width,H=c.height;return [{x:W*i,y:H*i},{x:W*(1-i),y:H*i},{x:W*(1-i),y:H*(1-i)},{x:W*i,y:H*(1-i)}]};
+/* "full frame" is now the exact image (no hidden 2% crop), so Original stays untouched */
 const exactFrame=c=>[{x:0,y:0},{x:c.width,y:0},{x:c.width,y:c.height},{x:0,y:c.height}];
+const fullFrame=exactFrame;
 
-async function fileToCanvas(f,max=2200){
+/* full-resolution limits: long side 4096 px and ~12.6 megapixels */
+const MAXO=4096,MAXPX=12.6e6;
+async function fileToCanvas(f,max=MAXO){
   let bmp;try{bmp=await createImageBitmap(f,{imageOrientation:'from-image'})}catch{bmp=await createImageBitmap(f)}
-  const s=Math.min(1,max/Math.max(bmp.width,bmp.height)),c=$c(Math.round(bmp.width*s),Math.round(bmp.height*s));
-  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);return c;
+  const s=Math.min(1,max/Math.max(bmp.width,bmp.height),Math.sqrt(MAXPX/(bmp.width*bmp.height))),c=$c(Math.round(bmp.width*s),Math.round(bmp.height*s)),x=c.getContext('2d');
+  x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.imageSmoothingQuality='high';
+  x.drawImage(bmp,0,0,c.width,c.height);bmp.close&&bmp.close();return c;
 }
 async function pdfToCanvases(file,scale=1.5,cb){
+  await need('pdfjs');
   const d=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise,out=[];
-  for(let i=1;i<=d.numPages;i++){cb&&cb(i,d.numPages);const p=await d.getPage(i),vp=p.getViewport({scale}),c=$c(Math.ceil(vp.width),Math.ceil(vp.height));
+  for(let i=1;i<=d.numPages;i++){cb&&cb(i,d.numPages);const p=await d.getPage(i);
+    let sc=scale;if(scale==='auto'){const v1=p.getViewport({scale:1});sc=clamp(2400/Math.max(v1.width,v1.height),1,4)}
+    const vp=p.getViewport({scale:sc}),c=$c(Math.ceil(vp.width),Math.ceil(vp.height));
     await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;out.push(c)}
+  d.destroy&&d.destroy();
   return out;
 }
 
-/* ---------- OpenCV: detect / warp / enhance ---------- */
+/* ---------- OpenCV: edge detection ---------- */
+function quadOK(q){
+  for(let i=0;i<4;i++){const a=q[(i+3)%4],b=q[i],c=q[(i+1)%4];
+    const v1x=a.x-b.x,v1y=a.y-b.y,v2x=c.x-b.x,v2y=c.y-b.y;
+    const cs=(v1x*v2x+v1y*v2y)/(Math.hypot(v1x,v1y)*Math.hypot(v2x,v2y)+1e-9);
+    if(Math.abs(cs)>.62)return false}
+  return true}
 function detectCv(cnv,minFrac=.15){
-  const m=cv.imread(cnv),g=new cv.Mat(),e=new cv.Mat(),k=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
-  const area0=cnv.width*cnv.height;let best=null;
-  const scan=bin=>{const cs=new cv.MatVector(),h=new cv.Mat();cv.findContours(bin,cs,h,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
-    let ba=area0*minFrac;
-    for(let i=0;i<cs.size();i++){const c=cs.get(i),ap=new cv.Mat();cv.approxPolyDP(c,ap,.02*cv.arcLength(c,true),true);
-      const a=cv.contourArea(ap);
-      if(ap.rows===4&&cv.isContourConvex(ap)&&a>ba&&a<area0*.97){ba=a;best=[0,1,2,3].map(j=>({x:ap.data32S[j*2],y:ap.data32S[j*2+1]}))}
-      ap.delete();c.delete()}
-    cs.delete();h.delete()};
+  const m=cv.imread(cnv),g=new cv.Mat(),e=new cv.Mat(),k3=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3)),k5=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
+  const area0=cnv.width*cnv.height;let best=null,bestA=area0*minFrac;
+  const consider=bin=>{const cs=new cv.MatVector(),h=new cv.Mat();
+    try{
+      cv.findContours(bin,cs,h,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+      for(let i=0;i<cs.size();i++){
+        const c=cs.get(i);
+        try{
+          const a0=cv.contourArea(c);if(a0<=bestA||a0>=area0*.99)continue;
+          const hull=new cv.Mat();
+          try{
+            cv.convexHull(c,hull,false,true);
+            const per=cv.arcLength(hull,true);
+            for(const eps of [.02,.03,.045,.06,.08]){
+              const ap=new cv.Mat();
+              try{
+                cv.approxPolyDP(hull,ap,eps*per,true);
+                if(ap.rows===4){
+                  const q=[0,1,2,3].map(j=>({x:ap.data32S[j*2],y:ap.data32S[j*2+1]})),a=cv.contourArea(ap);
+                  if(a>bestA&&a<area0*.985&&quadOK(q)){bestA=a;best=q}
+                  break;
+                }
+              }finally{ap.delete()}
+            }
+          }finally{hull.delete()}
+        }finally{c.delete()}
+      }
+    }finally{cs.delete();h.delete()}};
   try{
     cv.cvtColor(m,g,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(g,g,new cv.Size(5,5),0);
-    cv.Canny(g,e,50,150);cv.dilate(e,e,k);scan(e);
-    if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k);scan(e)}
-  }finally{m.delete();g.delete();e.delete();k.delete()}
+    /* 1) Canny with thresholds taken from the image brightness */
+    const d=g.data,hs=new Uint32Array(256);for(let i=0;i<d.length;i+=7)hs[d[i]]++;
+    let tot=0;for(let i=0;i<256;i++)tot+=hs[i];let acc=0,med=128;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=tot/2){med=i;break}}
+    cv.Canny(g,e,Math.max(20,.66*med*.6),Math.min(255,Math.max(80,1.33*med*.8)));cv.dilate(e,e,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e);
+    /* 2) Otsu (light page on darker background) */
+    if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e)}
+    /* 3) inverse Otsu (dark page on light background) */
+    if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e)}
+  }finally{m.delete();g.delete();e.delete();k3.delete();k5.delete()}
   return best&&orderPts(best);
 }
 function detectFull(src,minFrac=.15){
-  const sc=Math.min(1,600/Math.max(src.width,src.height)),s=$c(Math.round(src.width*sc),Math.round(src.height*sc));
-  s.getContext('2d').drawImage(src,0,0,s.width,s.height);
+  const sc=Math.min(1,800/Math.max(src.width,src.height)),s=$c(Math.round(src.width*sc),Math.round(src.height*sc)),x=s.getContext('2d');
+  x.imageSmoothingQuality='high';x.drawImage(src,0,0,s.width,s.height);
   const r=detectCv(s,minFrac);return r&&r.map(p=>({x:p.x/sc,y:p.y/sc}));
+}
+
+/* ---------- perspective correction ---------- */
+/* true width/height of the rectangle from its perspective image (Zhang & He), centred pixel coordinates */
+function estAspect(tl,tr,br,bl,W0,H0){
+  const u=W0/2,v=H0/2,m1=[tl.x-u,tl.y-v,1],m2=[tr.x-u,tr.y-v,1],m3=[bl.x-u,bl.y-v,1],m4=[br.x-u,br.y-v,1];
+  const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dt=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const dn2=dt(cr(m2,m4),m3),dn3=dt(cr(m3,m4),m2);
+  if(Math.abs(dn2)<1e-6||Math.abs(dn3)<1e-6)return null;
+  const k2=dt(cr(m1,m4),m3)/dn2,k3=dt(cr(m1,m4),m2)/dn3;
+  const n2=[k2*m2[0]-m1[0],k2*m2[1]-m1[1],k2-1],n3=[k3*m3[0]-m1[0],k3*m3[1]-m1[1],k3-1];
+  if(Math.abs(n2[2])<1e-4||Math.abs(n3[2])<1e-4)return null;
+  const f2=-(n2[0]*n3[0]+n2[1]*n3[1])/(n2[2]*n3[2]);
+  if(!(f2>0)||!isFinite(f2))return null;
+  const a=((n2[0]**2+n2[1]**2)/f2+n2[2]**2),b=((n3[0]**2+n3[1]**2)/f2+n3[2]**2);
+  if(!(a>0&&b>0))return null;
+  const r=Math.sqrt(a/b);return isFinite(r)?r:null;
 }
 function warp(src,corners,aspect){
   const [tl,tr,br,bl]=orderPts(corners),d=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
-  let W=Math.max(10,Math.round(Math.max(d(tl,tr),d(bl,br)))),H=Math.max(10,Math.round(Math.max(d(tl,bl),d(tr,br))));
-  if(aspect){if(W>=H)H=Math.round(W/aspect);else W=Math.round(H/aspect)}
-  const s=Math.min(1,2400/Math.max(W,H));W=Math.round(W*s);H=Math.round(H*s);
+  const isFull=[tl,tr,br,bl].every((p,i)=>Math.abs(p.x-(i===1||i===2?src.width:0))<1.5&&Math.abs(p.y-(i>=2?src.height:0))<1.5);
+  if(isFull&&!aspect)return src; // nothing to flatten: the exact original is reused
+  const wE=Math.max(d(tl,tr),d(bl,br)),hE=Math.max(d(tl,bl),d(tr,br)),simple=wE/Math.max(1,hE);
+  let ratio;
+  if(aspect)ratio=wE>=hE?aspect:1/aspect;
+  else{
+    ratio=estAspect(tl,tr,br,bl,src.width,src.height);
+    if(!ratio||ratio<.2||ratio>5||Math.max(ratio/simple,simple/ratio)>1.5)ratio=simple;
+  }
+  let W=Math.max(wE,hE*ratio),H=W/ratio;
+  const s=Math.min(1,MAXO/Math.max(W,H),Math.sqrt(MAXPX/(W*H)));
+  W=Math.max(10,Math.round(W*s));H=Math.max(10,Math.round(H*s));
   const m=cv.imread(src),out=new cv.Mat();
   const f=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
   const t=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,W,0,W,H,0,H]);
   const M=cv.getPerspectiveTransform(f,t);
-  cv.warpPerspective(m,out,M,new cv.Size(W,H),cv.INTER_CUBIC,cv.BORDER_REPLICATE);
-  const c=$c(W,H);cv.imshow(c,out);[m,out,f,t,M].forEach(x=>x.delete());return c;
-}
-function bgNorm(rgb){
-  const sc=Math.min(1,400/rgb.cols),sm=new cv.Mat(),bg=new cv.Mat(),f1=new cv.Mat(),f2=new cv.Mat();
-  cv.resize(rgb,sm,new cv.Size(Math.round(rgb.cols*sc),Math.round(rgb.rows*sc)),0,0,cv.INTER_AREA);
-  const k=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(15,15));
-  cv.morphologyEx(sm,sm,cv.MORPH_CLOSE,k);cv.GaussianBlur(sm,sm,new cv.Size(7,7),0);
-  cv.resize(sm,bg,new cv.Size(rgb.cols,rgb.rows),0,0,cv.INTER_LINEAR);
-  rgb.convertTo(f1,cv.CV_32FC3);bg.convertTo(f2,cv.CV_32FC3);cv.divide(f1,f2,f1,255);f1.convertTo(rgb,cv.CV_8UC3);
-  [sm,bg,f1,f2,k].forEach(x=>x.delete());
-}
-function enhance(flat,o){
-  const rgba=cv.imread(flat),rgb=new cv.Mat(),del=[rgba,rgb],f=o.filter;
   try{
-    cv.cvtColor(rgba,rgb,cv.COLOR_RGBA2RGB);
-    if(f==='magic'||f==='enhance'||f==='bw')bgNorm(rgb);
-    let a=1+o.ct/100,b=o.br*1.27;
-    if(f==='magic'){a*=1.15;b-=10}if(f==='color')a*=1.05;
-    rgb.convertTo(rgb,-1,a,b);
-    const s=f==='enhance'?.8:f==='magic'?.4:f==='color'?.2:0;
-    if(s){const bl=new cv.Mat();del.push(bl);cv.GaussianBlur(rgb,bl,new cv.Size(0,0),2);cv.addWeighted(rgb,1+s,bl,-s,0,rgb)}
-    let out=rgb;
-    if(f==='gray'||f==='bw'){const g=new cv.Mat();del.push(g);cv.cvtColor(rgb,g,cv.COLOR_RGB2GRAY);
-      if(f==='bw'){let bs=Math.max(31,Math.round(g.cols/40));if(bs%2===0)bs++;cv.adaptiveThreshold(g,g,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,bs,12)}
-      out=g}
-    const c=$c(out.cols,out.rows);cv.imshow(c,out);return c;
-  }finally{del.forEach(m=>m.delete&&m.delete())}
+    cv.warpPerspective(m,out,M,new cv.Size(W,H),cv.INTER_CUBIC,cv.BORDER_REPLICATE);
+    const c=$c(W,H);cv.imshow(c,out);return c;
+  }finally{[m,out,f,t,M].forEach(x=>x.delete())}
 }
+
+/* ---------- image analysis ---------- */
+function lumaStats(m){
+  const sc=Math.min(1,480/Math.max(m.cols,m.rows)),sm=new cv.Mat(),g=new cv.Mat();
+  try{
+    if(sc<1)cv.resize(m,sm,new cv.Size(Math.max(8,Math.round(m.cols*sc)),Math.max(8,Math.round(m.rows*sc))),0,0,cv.INTER_AREA);else m.copyTo(sm);
+    if(sm.channels()===1)sm.copyTo(g);else cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
+    const d=g.data,h=new Float64Array(256);for(let i=0;i<d.length;i++)h[d[i]]++;
+    const n=d.length,pc=f=>{const t=n*f;let a=0;for(let i=0;i<256;i++){a+=h[i];if(a>=t)return i}return 255};
+    return {p005:pc(.005),p05:pc(.05),p50:pc(.5),p90:pc(.9),p995:pc(.995)};
+  }finally{sm.delete();g.delete()}
+}
+/* noise sigma (Immerkaer, robust median version) measured on the full-resolution page */
+function estNoise(canvas){
+  const m=cv.imread(canvas),g=new cv.Mat(),o=new cv.Mat();let crop=null,k=null;
+  try{
+    cv.cvtColor(m,g,cv.COLOR_RGBA2GRAY);
+    const cw=Math.min(g.cols,640),ch=Math.min(g.rows,640);if(cw<8||ch<8)return 0;
+    crop=g.roi(new cv.Rect((g.cols-cw)>>1,(g.rows-ch)>>1,cw,ch));
+    k=cv.matFromArray(3,3,cv.CV_32F,[1,-2,1,-2,4,-2,1,-2,1]);
+    cv.filter2D(crop,o,cv.CV_16S,k);
+    const d=o.data16S,h=new Uint32Array(1100);let n=0;
+    for(let i=0;i<d.length;i++){const a=Math.abs(d[i]);h[a>1099?1099:a]++;n++}
+    let acc=0,med=0;for(let i=0;i<1100;i++){acc+=h[i];if(acc>=n/2){med=i;break}}
+    return clamp(med/(.6745*6),0,15);
+  }catch(e){return 0}finally{[m,g,o,crop,k].forEach(kill)}
+}
+
+/* ---------- image processing building blocks (all 8-bit, original resolution) ---------- */
+/* Edge-preserving denoise: chroma is smoothed, luma gets a light bilateral filter. Only used on noisy images. */
+function denoise(rgb,sigma){
+  const ycc=new cv.Mat(),pl=new cv.MatVector(),mg=new cv.MatVector(),out=new cv.Mat(),res=new cv.Mat(),Y2=new cv.Mat();
+  let Y=null,Cr=null,Cb=null;
+  try{
+    cv.cvtColor(rgb,ycc,cv.COLOR_RGB2YCrCb);cv.split(ycc,pl);
+    Y=pl.get(0);Cr=pl.get(1);Cb=pl.get(2);
+    const cs=clamp(1.2+sigma*.35,1.5,3.5);
+    cv.GaussianBlur(Cr,Cr,new cv.Size(0,0),cs);cv.GaussianBlur(Cb,Cb,new cv.Size(0,0),cs);
+    cv.bilateralFilter(Y,Y2,5,clamp(8+sigma*4,10,34),3);
+    mg.push_back(Y2);mg.push_back(Cr);mg.push_back(Cb);cv.merge(mg,out);
+    cv.cvtColor(out,res,cv.COLOR_YCrCb2RGB);
+    return res;
+  }catch(e){kill(res);throw e}
+  finally{[ycc,pl,mg,out,Y2,Y,Cr,Cb].forEach(kill)}
+}
+/* Uneven-light / shadow correction. The gain is limited to genuine shadows, so photos and dark blocks are NOT bleached. */
+function shade(rgb,strength,gLo,gHi){
+  const W=rgb.cols,H=rgb.rows,sc=Math.min(1,400/Math.max(W,H)),w=Math.max(8,Math.round(W*sc)),h=Math.max(8,Math.round(H*sc));
+  const sm=new cv.Mat(),g=new cv.Mat(),bg=new cv.Mat();let ker=null,GF=null,G=null,G3=null;
+  try{
+    cv.resize(rgb,sm,new cv.Size(w,h),0,0,cv.INTER_AREA);cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
+    const ks=Math.max(7,Math.round(Math.max(w,h)*.045)|1);
+    ker=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(ks,ks));
+    cv.morphologyEx(g,bg,cv.MORPH_CLOSE,ker);              // removes dark text, keeps the paper
+    cv.GaussianBlur(bg,bg,new cv.Size(0,0),Math.max(2,Math.max(w,h)*.02));
+    const d=bg.data,n=w*h,hs=new Float64Array(256);for(let i=0;i<n;i++)hs[d[i]]++;
+    let acc=0,P=255;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=n*.9){P=i;break}}
+    if(P<90)return;                                        // no bright paper in the picture: leave it alone
+    const out=new Uint8Array(n);
+    for(let i=0;i<n;i++){
+      const b=Math.max(d[i],1),wt=smooth(gLo*P,gHi*P,b);
+      const gain=Math.min(1.98,1+strength*wt*(Math.max(1,P/b)-1));
+      out[i]=Math.round(gain*128);
+    }
+    GF=cv.matFromArray(h,w,cv.CV_8UC1,out);
+    G=new cv.Mat();cv.resize(GF,G,new cv.Size(W,H),0,0,cv.INTER_LINEAR);
+    G3=new cv.Mat();cv.cvtColor(G,G3,cv.COLOR_GRAY2RGB);
+    cv.multiply(rgb,G3,rgb,1/128,-1);
+  }finally{[sm,g,bg,ker,GF,G,G3].forEach(kill)}
+}
+/* Unsharp mask with a noise threshold (soft), so grain is not amplified */
+function usm(m,amount,sigma,thr){
+  if(amount<=.03)return;
+  const bl=new cv.Mat(),pos=new cv.Mat(),neg=new cv.Mat();
+  try{
+    cv.GaussianBlur(m,bl,new cv.Size(0,0),sigma);
+    cv.subtract(m,bl,pos);cv.subtract(bl,m,neg);
+    if(thr>0){pos.convertTo(pos,-1,1,-thr);neg.convertTo(neg,-1,1,-thr)}
+    cv.addWeighted(m,1,pos,amount,0,m);
+    cv.addWeighted(m,1,neg,-amount,0,m);
+  }finally{[bl,pos,neg].forEach(kill)}
+}
+/* Tone curve: exposure -> levels -> gamma/brightness -> non-clipping contrast -> soft highlight shoulder */
+function buildLUT(t){
+  const lut=new Array(256),gex=Math.pow(2,t.ex/100*1.2),g=t.gamma*Math.pow(2,-t.br/100*.9),a=t.a0*Math.pow(2,t.ct/100),rng=Math.max(.05,(t.hi-t.lo)/255),lo=t.lo/255;
+  for(let i=0;i<256;i++){
+    let x=Math.max(0,(i/255*gex-lo)/rng),over=0;
+    if(x>1){over=x-1;x=1}
+    let y=Math.pow(x,g);
+    if(a!==1){const p=Math.pow(y,a),q=Math.pow(1-y,a);y=p+q>0?p/(p+q):y}
+    const o=t.loT+(t.hiT-t.loT)*y+(1-t.hiT)*(1-Math.exp(-over/.15));
+    lut[i]=clamp(Math.round(o*255),0,255);
+  }
+  return lut;
+}
+/* Filter presets (all mild; sh = base sharpening amount) */
+const PRE={
+ color:{shade:0,a0:1.04,loT:0,hiT:.985,sh:.35},
+ gray:{shade:.6,a0:1.06,loT:0,hiT:.975,sh:.45,gray:1},
+ magic:{shade:1,a0:1.12,loT:.02,hiT:.965,sh:.5,doc:1},
+ enhance:{shade:1,a0:1.2,loT:.02,hiT:.96,sh:.8,doc:1},
+ bw:{shade:1,sh:.6,gray:1}};
+
+/* Main pipeline. Input: flattened page at full (or proxy) resolution. Output: processed canvas. */
+function enhance(flat,o,opt={}){
+  const f=o.filter,br=o.br||0,ct=o.ct||0,shp=o.sh||0,ex=o.ex||0,it=o.it==null?100:o.it;
+  if(f==='original'&&!br&&!ct&&!shp&&!ex)return flat;           // Original = untouched
+  const noise=opt.noise||0,Pm=PRE[f]||null,own=[];
+  const mk=()=>{const m=new cv.Mat();own.push(m);return m};
+  const lut8=(m,lut)=>{const L=cv.matFromArray(1,256,cv.CV_8UC1,lut),d=mk();cv.LUT(m,L,d);kill(L);kill(m);return d};
+  try{
+    const rgba=cv.imread(flat);own.push(rgba);
+    let cur=mk();cv.cvtColor(rgba,cur,cv.COLOR_RGBA2RGB);kill(rgba);
+    const longS=Math.max(cur.cols,cur.rows),orig=it<100?cur.clone():null;if(orig)own.push(orig);
+    if(Pm){
+      if(noise>=2.2){const n=denoise(cur,noise);own.push(n);kill(cur);cur=n}
+      if(Pm.shade>0)shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6);
+      if(Pm.gray){const g=mk();cv.cvtColor(cur,g,cv.COLOR_RGB2GRAY);kill(cur);cur=g}
+    }
+    const sig=clamp(longS/2600,.6,1.6),thr=clamp(Math.round(2+noise),2,12),nf=1/(1+Math.max(0,noise-1.5)/4);
+    if(f==='bw'){
+      const st=lumaStats(cur),P=Math.max(60,st.p90)/Math.pow(2,ex/100*1.2);
+      usm(cur,clamp(Pm.sh+shp/100*.9,0,1.8)*nf,sig,thr);
+      /* soft threshold relative to the paper level: thin, anti-aliased strokes keep their darkness */
+      const mid=.72-br/100*.18,wd=.34/Math.pow(2,ct/100),a=mid-wd/2,b=mid+wd/2,lut=new Array(256);
+      for(let i=0;i<256;i++)lut[i]=Math.round(255*smooth(a,b,i/P));
+      cur=lut8(cur,lut);
+    }else{
+      let t;
+      if(!Pm)t={lo:0,hi:255,loT:0,hiT:ex>0?.995:1,gamma:1,a0:1};
+      else{
+        const st=lumaStats(cur),doc=!!Pm.doc;let lo,hi;
+        if(doc){hi=st.p50>=120?st.p90:st.p995;lo=Math.min(st.p005,100)}
+        else{lo=Math.min(st.p005*.9,100);hi=st.p995}
+        if(hi-lo<90)hi=Math.min(255,lo+90);
+        const m=clamp((st.p50-lo)/Math.max(1,hi-lo),.01,1.2);let gA=1;
+        if(!doc){
+          if(m<.32)gA=clamp(Math.log(.4)/Math.log(m),.6,1);          // dark photo: lift mid-tones
+          else if(st.p50>205&&st.p05>120)gA=1.25;                    // blown-out frame: pull mid-tones down
+        }
+        t={lo,hi,loT:Pm.loT,hiT:Pm.hiT,gamma:gA,a0:Pm.a0};
+      }
+      cur=lut8(cur,buildLUT({...t,ex,br,ct}));
+      usm(cur,Pm?clamp(Pm.sh+shp/100*.9,0,1.8)*nf:Math.max(0,shp/100*.9),sig,Pm?thr:2);
+    }
+    if(orig){                                                      // filter intensity: blend with the original
+      let c3=cur;if(cur.channels()===1){c3=mk();cv.cvtColor(cur,c3,cv.COLOR_GRAY2RGB)}
+      const k=it/100,mx=mk();cv.addWeighted(orig,1-k,c3,k,0,mx);cur=mx;
+    }
+    const c=$c(cur.cols,cur.rows);cv.imshow(c,cur);return c;
+  }finally{own.forEach(kill)}
+}
+
+/* ---------- per-page cache: flattened page + small proxy (for live preview) + noise estimate ---------- */
+let FC=null;
+function getFlat(p){
+  const k=p.id+'|'+(p.sv||0)+'|'+p.corners.map(q=>Math.round(q.x*10)+','+Math.round(q.y*10)).join(';')+'|'+(p.aspect||0)+'|'+p.src.width+'x'+p.src.height;
+  if(FC&&FC.key===k)return FC;
+  FC={key:k,flat:warp(p.src,p.corners,p.aspect),px:{},noise:undefined};
+  return FC;
+}
+function getProxy(fe,max=1000){
+  const key='p'+max;if(fe.px[key])return fe.px[key];
+  const f=fe.flat,s=Math.min(1,max/Math.max(f.width,f.height));
+  if(s>=1)return fe.px[key]=f;
+  const c=$c(Math.max(1,Math.round(f.width*s)),Math.max(1,Math.round(f.height*s))),x=c.getContext('2d');
+  x.imageSmoothingQuality='high';x.drawImage(f,0,0,c.width,c.height);return fe.px[key]=c;
+}
+function getNoise(fe){if(fe.noise===undefined){try{fe.noise=estNoise(fe.flat)}catch(e){fe.noise=0}}return fe.noise}
+
 async function renderPage(p){
   await cvReady();
-  const key=JSON.stringify(p.corners)+p.aspect+p.src.width+'x'+p.src.height;
-  const flat=(p.flat&&p.flatKey===key)?p.flat:warp(p.src,p.corners,p.aspect);
-  const result=enhance(flat,p),t=$c(300,Math.max(1,Math.round(300*result.height/result.width)));
-  t.getContext('2d').drawImage(result,0,0,t.width,t.height);
-  return {...p,flat,flatKey:key,result,thumb:t.toDataURL('image/jpeg',.7)};
+  const fe=getFlat(p);
+  const result=enhance(fe.flat,p,{noise:p.filter==='original'?0:getNoise(fe)});
+  const t=$c(320,Math.max(1,Math.round(320*result.height/result.width))),x=t.getContext('2d');
+  x.imageSmoothingQuality='high';x.drawImage(result,0,0,t.width,t.height);
+  return {...p,result,thumb:t.toDataURL('image/jpeg',.8),v:(p.v||0)+1};
 }
 function rotCanvas(src){const c=$c(src.height,src.width),x=c.getContext('2d');x.translate(c.width/2,c.height/2);x.rotate(Math.PI/2);x.drawImage(src,-src.width/2,-src.height/2);return c}
 const rotPts=(pts,H)=>pts.map(p=>({x:H-p.y,y:p.x}));
 
 const MODES=[
- {k:'wb',n:'Whiteboard',f:'magic',detect:true,ct:25,tip:'Point at the whiteboard and tap the screen. DocScan will find the borders and capture it.'},
+ {k:'wb',n:'Whiteboard',f:'magic',detect:true,ct:10,tip:'Point at the whiteboard and tap the screen. DocScan will find the borders and capture it.'},
  {k:'book',n:'Book',f:'enhance',detect:true,tip:'Keep the open book flat and tap the screen. Both pages are captured and split into two pages.'},
  {k:'doc',n:'Document',f:'magic',detect:true,tip:"Tap the screen when you're ready. DocScan will find the borders and capture the page for you."},
  {k:'id',n:'ID Card',f:'color',detect:true,aspect:1.586,tip:'Place the ID card on a plain background and tap the screen.'},
@@ -172,20 +409,22 @@ const MODES=[
  {k:'photo',n:'Photo',f:'original',detect:false}];
 const FILTERS=[['original','Original'],['color','Color'],['gray','Grayscale'],['bw','Black & White'],['magic','Magic Color'],['enhance','Doc Enhance']];
 
-/* ---------- PDF creation ---------- */
+/* ---------- PDF creation (full resolution, no extra downscaling unless Compress is ticked) ---------- */
 const SIZES={A4:[595.28,841.89],A3:[841.89,1190.55],Letter:[612,792]};
-async function buildPdf(canvases,o,progress){
+async function buildPdf(canvases,o,progress,hq){
+  await need('pdflib');
   const doc=await PDFLib.PDFDocument.create();
   for(let i=0;i<canvases.length;i++){
-    if(progress){progress(i,canvases.length);await new Promise(r=>setTimeout(r,0))}
-    let c=canvases[i];const w0=c.width,h0=c.height,mx=o.max||(o.compress?1600:3000),s=Math.min(1,mx/Math.max(c.width,c.height));
-    if(s<1){const t=$c(Math.round(c.width*s),Math.round(c.height*s));t.getContext('2d').drawImage(c,0,0,t.width,t.height);c=t}
-    const img=await doc.embedJpg(new Uint8Array(await (await toBlob(c,'image/jpeg',o.q/100)).arrayBuffer()));
+    if(progress){progress(i,canvases.length);await nextFrame()}
+    let c=canvases[i];const w0=c.width,h0=c.height,mx=o.max||(o.compress?1600:1e5),s=Math.min(1,mx/Math.max(w0,h0));
+    if(s<1){const t=$c(Math.round(w0*s),Math.round(h0*s)),x=t.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c,0,0,t.width,t.height);c=t}
+    const q=Math.min(100,Math.max(o.q,hq&&hq[i]?95:0));
+    const img=await doc.embedJpg(new Uint8Array(await (await toBlob(c,'image/jpeg',q/100)).arrayBuffer()));
     let W,H;
-    if(o.size==='Original'){const k=o.k||.48;W=w0*k;H=h0*k}
+    if(o.size==='Original'){const k=o.k||.24;W=w0*k;H=h0*k}            // 0.24 = 300 dpi
     else{[W,H]=SIZES[o.size];if(o.orient==='landscape'||(o.orient==='auto'&&w0>h0))[W,H]=[H,W]}
     const m=o.size==='Original'?0:o.margin*2.835,k=Math.min((W-2*m)/img.width,(H-2*m)/img.height),w=img.width*k,h=img.height*k;
-    doc.addPage([W,H]).drawImage(img,{x:(W-w)/2,y:(H-h)/2,width:w,height:h});
+    doc.addPage([W,H]).drawImage(img,{x:(W-w)/2,y:(H-h)/2,width:w,height:h});   // aspect ratio preserved
   }
   if(o.pw){
     if(typeof doc.encrypt!=='function')throw new Error('Password protection is not supported by the loaded PDF library.');
@@ -236,59 +475,96 @@ const P={
 const Icon=({n,c='h-5 w-5'})=><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={c}>{P[n]}</svg>;
 const INP='mt-1 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm outline-none transition focus:border-[#eb1000] focus:ring-2 focus:ring-red-100';
 const Card=({children,className=''})=><div className={'rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200/70 '+className}>{children}</div>;
-const Bar=({title,onBack,right})=><div className="sticky top-0 z-10 flex items-center gap-2 border-b border-slate-200/70 bg-white/80 px-3 py-2.5 backdrop-blur-xl"><button onClick={onBack} className="grid h-9 w-9 place-items-center rounded-full transition hover:bg-slate-100 active:scale-90"><Icon n="back"/></button><h1 className="text-[15px] font-semibold">{title}</h1><div className="ml-auto">{right}</div></div>;
+const Bar=({title,onBack,right})=><div className="sticky top-0 z-10 flex items-center gap-2 border-b border-slate-200/70 bg-white/95 px-3 py-2.5"><button onClick={onBack} className="grid h-9 w-9 place-items-center rounded-full transition hover:bg-slate-100 active:scale-90"><Icon n="back"/></button><h1 className="text-[15px] font-semibold">{title}</h1><div className="ml-auto">{right}</div></div>;
 const Btn=({red,className='',...p})=><button {...p} className={'inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-95 disabled:pointer-events-none disabled:opacity-40 '+(red?'bg-gradient-to-br from-[#ff4b3a] to-[#d90b00] text-white shadow-lg shadow-red-500/30 ':'border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 ')+className}/>;
 const ImportBtn=({onFiles,className,children})=><label className={'cursor-pointer transition active:scale-95 '+className}>{children}<input type="file" hidden multiple accept="image/*,application/pdf" onChange={e=>{onFiles([...e.target.files]);e.target.value=''}}/></label>;
-function CanvasView({canvas}){const r=useRef();useEffect(()=>{const c=r.current;c.width=canvas.width;c.height=canvas.height;c.getContext('2d').drawImage(canvas,0,0)},[canvas]);
+/* shows a canvas, down-scaled for display only (the real data is never touched) */
+function drawFit(c,src,max=1600){const s=Math.min(1,max/Math.max(src.width,src.height));c.width=Math.max(1,Math.round(src.width*s));c.height=Math.max(1,Math.round(src.height*s));const g=c.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(src,0,0,c.width,c.height)}
+function CanvasView({canvas}){const r=useRef();useEffect(()=>{if(r.current)drawFit(r.current,canvas)},[canvas]);
   return <canvas ref={r} className="mx-auto max-h-[62vh] max-w-full rounded-xl bg-white shadow-md ring-1 ring-slate-200"/>}
-function Slider({label,value,min,max,onCommit}){const [v,setV]=useState(value);const t=useRef();useEffect(()=>setV(value),[value]);
-  return <label className="block text-xs font-medium text-slate-600"><span className="flex justify-between"><span>{label}</span><span className="text-slate-400">{v}</span></span><input type="range" className="w-full accent-red-600" min={min} max={max} value={v} onChange={e=>{const n=+e.target.value;setV(n);clearTimeout(t.current);t.current=setTimeout(()=>onCommit(n),350)}}/></label>}
+/* Original vs Enhanced: drag the slider to wipe between the two */
+function Wipe({before,after}){
+  const [x,setX]=useState(50),A=useRef(),B=useRef();
+  useEffect(()=>{if(A.current)drawFit(A.current,before,1400)},[before]);
+  useEffect(()=>{if(B.current)drawFit(B.current,after,1400)},[after]);
+  const ratio=after.width/after.height;
+  return <div>
+    <div className="relative mx-auto overflow-hidden rounded-xl bg-white shadow-md ring-1 ring-slate-200" style={{aspectRatio:`${after.width}/${after.height}`,width:`min(100%, ${60*ratio}vh)`}}>
+      <canvas ref={B} className="absolute inset-0 h-full w-full"/>
+      <canvas ref={A} className="absolute inset-0 h-full w-full" style={{clipPath:`inset(0 ${100-x}% 0 0)`}}/>
+      <div className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white shadow-[0_0_6px_rgba(0,0,0,.6)]" style={{left:x+'%'}}/>
+      <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-bold tracking-wider text-white">ORIGINAL</span>
+      <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-[#eb1000] px-2 py-0.5 text-[10px] font-bold tracking-wider text-white">ENHANCED</span>
+    </div>
+    <input type="range" min="0" max="100" value={x} onChange={e=>setX(+e.target.value)} className="mx-auto mt-3 block w-full max-w-md accent-red-600"/>
+    <p className="mt-1 text-center text-xs text-slate-500">Drag the slider to compare Original and Enhanced</p>
+  </div>;
+}
+function Slider({label,value,min,max,def=0,onChange}){
+  return <label className="block text-xs font-medium text-slate-600"><span className="flex justify-between"><span>{label}</span><span className="text-slate-500">{value}{value!==def&&<button type="button" className="ml-2 font-bold text-[#eb1000]" onClick={e=>{e.preventDefault();onChange(def)}}>↺</button>}</span></span><input type="range" className="w-full accent-red-600" min={min} max={max} value={value} onChange={e=>onChange(+e.target.value)}/></label>}
 function Results({items,say}){return <div className="space-y-2">{items.map((r,i)=><Card key={i} className="fade flex flex-wrap items-center gap-2 !p-3 text-sm">
   <span className="mr-auto font-semibold">{r.name} <span className="font-normal text-slate-500">({kb(r.blob.size)})</span></span>
   <Btn red onClick={()=>dl(r.blob,r.name)}><Icon n="download" c="h-4 w-4"/>Download</Btn>
   <Btn onClick={async()=>{try{if(!await share(r.blob,r.name)){dl(r.blob,r.name);say('Sharing not supported here — downloaded instead')}}catch(e){say(e.message)}}}><Icon n="share" c="h-4 w-4"/></Btn>
   <Btn onClick={async()=>{await dbPut({name:r.name,blob:r.blob,size:r.blob.size,date:Date.now()});say('Saved to My Documents')}}><Icon n="save" c="h-4 w-4"/></Btn></Card>)}</div>}
 
-/* PDF preview drawn with PDF.js (works on mobile, unlike <iframe>) */
+/* PDF preview: pages render lazily, only when scrolled into view */
 function PdfPreview({blob,password}){
   const box=useRef(),[msg,setMsg]=useState('Rendering preview…');
-  useEffect(()=>{let dead=false;(async()=>{
-    try{
-      const d=await pdfjsLib.getDocument({data:await blob.arrayBuffer(),password:password||undefined}).promise;
-      const host=box.current;host.innerHTML='';
-      for(let i=1;i<=d.numPages&&!dead;i++){
-        const p=await d.getPage(i),v0=p.getViewport({scale:1}),w=Math.min(host.clientWidth||600,900);
-        const vp=p.getViewport({scale:w/v0.width*(window.devicePixelRatio||1)});
-        const c=document.createElement('canvas');c.width=Math.ceil(vp.width);c.height=Math.ceil(vp.height);
-        c.style.cssText='width:100%;margin-bottom:10px;border-radius:12px;background:#fff;box-shadow:0 4px 14px rgba(15,23,42,.12)';
-        await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
-        if(dead)return;host.appendChild(c);
-      }
-      if(!dead)setMsg('');
-    }catch(e){if(!dead)setMsg('Preview failed: '+e.message)}
-  })();return()=>{dead=true}},[blob]);
+  useEffect(()=>{
+    let dead=false,io=null,doc=null,chain=Promise.resolve();
+    (async()=>{
+      try{
+        await need('pdfjs');
+        doc=await pdfjsLib.getDocument({data:await blob.arrayBuffer(),password:password||undefined}).promise;
+        if(dead)return;
+        const host=box.current;host.innerHTML='';
+        const dpr=Math.min(window.devicePixelRatio||1,2),w=Math.min((host.clientWidth||600)-16,900);
+        const draw=(slot,i)=>{chain=chain.then(async()=>{
+          if(dead||slot.dataset.done)return;slot.dataset.done='1';
+          const p=await doc.getPage(i),v0=p.getViewport({scale:1}),vp=p.getViewport({scale:w/v0.width*dpr});
+          const c=document.createElement('canvas');c.width=Math.ceil(vp.width);c.height=Math.ceil(vp.height);c.style.cssText='width:100%;height:100%;display:block';
+          await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+          if(!dead)slot.appendChild(c);
+        }).catch(()=>{})};
+        io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){io.unobserve(e.target);draw(e.target,+e.target.dataset.i)}}),{root:host,rootMargin:'500px'});
+        for(let i=1;i<=doc.numPages;i++){
+          const p=await doc.getPage(i),v0=p.getViewport({scale:1}),s=document.createElement('div');
+          s.dataset.i=i;
+          s.style.cssText='width:100%;aspect-ratio:'+v0.width+'/'+v0.height+';margin-bottom:10px;border-radius:12px;background:#fff;box-shadow:0 4px 14px rgba(15,23,42,.12);overflow:hidden';
+          host.appendChild(s);io.observe(s);
+        }
+        if(!dead)setMsg('');
+      }catch(e){if(!dead)setMsg('Preview failed: '+e.message)}
+    })();
+    return()=>{dead=true;io&&io.disconnect();doc&&doc.destroy&&doc.destroy()}
+  },[blob,password]);
   return <div>{msg&&<p className="text-xs text-slate-500">{msg}</p>}<div ref={box} className="max-h-[70vh] overflow-y-auto rounded-2xl bg-slate-100 p-2"/></div>;
 }
 
-/* ---------- Camera (Adobe Scan style: tap to start, auto borders, auto capture) ---------- */
+/* ---------- Camera ---------- */
 function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,onImport,onHome}){
-  const vref=useRef(),oref=useRef(),mrow=useRef(),sm=useRef($c(400,225)),st=useRef({stream:null,pts:null,still:0,armed:true,cool:0,torch:false,hint:''});
+  const vref=useRef(),oref=useRef(),mrow=useRef(),smc=useRef(null),st=useRef({stream:null,caps:{},pts:null,still:0,armed:true,cool:0,torch:false,hint:'',hold:false,n:0,ic:null,photoCaps:undefined,noPhoto:false});
   const [err,setErr]=useState(''),[facing,setFacing]=useState('environment'),[flash,setFlash]=useState('auto'),[auto,setAuto]=useState(true),[live,setLive]=useState(false);
   const [ready,setReady]=useState(false),[cvOk,setCvOk]=useState(false),[caps,setCaps]=useState({}),[ev,setEv]=useState(0),[zoom,setZoom]=useState(1);
   const [ring,setRing]=useState(null),[snap,setSnap]=useState(false),[retry,setRetry]=useState(0),[hint,setHint]=useState('');
   const cb=useRef({});cb.current={onCapture,mode,flash,auto,live};
   const shootRef=useRef();
   const md0=MODES.find(q=>q.k===mode);
+  const initCv=()=>cvReady().then(()=>setCvOk(true)).catch(e=>setErr(e.message));
 
-  useEffect(()=>{cvReady().then(()=>setCvOk(true)).catch(e=>setErr(e.message))},[]);
+  useEffect(()=>{initCv()},[]);
   useEffect(()=>{let dead=false;(async()=>{
     setReady(false);setErr('');
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){setErr('Camera is not available here. Open this page over HTTPS (or localhost) in a modern browser. You can still import from the gallery.');return}
     try{
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080}},audio:false});
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:2560},height:{ideal:1440},frameRate:{ideal:30}},audio:false});
       if(dead){s.getTracks().forEach(t=>t.stop());return}
-      st.current.stream=s;st.current.torch=false;const v=vref.current;v.srcObject=s;await v.play();
+      st.current.stream=s;st.current.torch=false;st.current.pts=null;st.current.still=0;st.current.ic=null;st.current.photoCaps=undefined;
+      const v=vref.current;v.srcObject=s;await v.play();
       const tr=s.getVideoTracks()[0],c=tr.getCapabilities?tr.getCapabilities():{};
+      st.current.caps=c;
+      if(c.focusMode&&c.focusMode.includes('continuous')){try{await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch{}}
       setCaps(c);setZoom(c.zoom?c.zoom.min:1);setEv(0);setReady(true);
     }catch(e){setErr(e.name==='NotAllowedError'?'Camera permission denied. Allow camera access in your browser settings, then retry.':e.name==='NotFoundError'?'No camera found on this device.':'Could not start the camera: '+e.message)}
   })();
@@ -301,46 +577,80 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
 
   useEffect(()=>{const el=mrow.current&&mrow.current.querySelector('[data-on="1"]');el&&el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'})},[mode]);
 
+  /* grab the sharpest frame available: full-resolution still if the browser supports it, else the video frame */
+  const grab=async()=>{
+    const S=st.current,v=vref.current,tr=S.stream&&S.stream.getVideoTracks()[0];
+    if(tr&&window.ImageCapture&&!S.noPhoto){
+      try{
+        if(!S.ic)S.ic=new ImageCapture(tr);
+        if(S.photoCaps===undefined){try{S.photoCaps=await S.ic.getPhotoCapabilities()}catch{S.photoCaps=null}}
+        const pc=S.photoCaps,opt={};
+        if(pc&&pc.imageWidth&&pc.imageHeight){opt.imageWidth=pc.imageWidth.max;opt.imageHeight=pc.imageHeight.max}
+        if(pc&&Array.isArray(pc.fillLightMode)&&pc.fillLightMode.includes('off'))opt.fillLightMode='off';
+        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),4500))]);
+        let c=await fileToCanvas(blob,MAXO);
+        if(v.videoWidth<v.videoHeight&&c.width>c.height)c=rotCanvas(c);   // safety net when EXIF orientation is missing
+        return c;
+      }catch(e){S.noPhoto=true}
+    }
+    const c=$c(v.videoWidth,v.videoHeight);c.getContext('2d').drawImage(v,0,0);return c;
+  };
   const shoot=async()=>{
-    const v=vref.current;if(!v||!v.videoWidth)return;
-    const c=$c(v.videoWidth,v.videoHeight);c.getContext('2d').drawImage(v,0,0);
-    const md=MODES.find(q=>q.k===cb.current.mode);let corners=null;
-    if(md.detect){try{await cvReady();corners=detectFull(c,.1)}catch{}}
-    navigator.vibrate&&navigator.vibrate(30);setSnap(true);setTimeout(()=>setSnap(false),120);
-    cb.current.onCapture(c,corners||fullFrame(c));
+    const S=st.current,v=vref.current;
+    if(S.hold||!v||!v.videoWidth)return;
+    S.hold=true;
+    try{
+      navigator.vibrate&&navigator.vibrate(25);setSnap(true);setTimeout(()=>setSnap(false),120);
+      const c=await grab();
+      const md=MODES.find(q=>q.k===cb.current.mode);let corners=null;
+      if(md.detect){try{await cvReady();corners=detectFull(c,.1)}catch{}}
+      await cb.current.onCapture(c,corners||exactFrame(c));
+    }catch(e){setErr('Capture failed: '+e.message)}
+    finally{S.hold=false;S.still=0}
   };
   shootRef.current=shoot;
 
-  useEffect(()=>{if(!ready||!cvOk)return;const S=st.current;
+  /* live edge detection (small canvas, self-scheduling loop, no overlap) */
+  useEffect(()=>{if(!ready||!cvOk)return;const S=st.current;let alive=true,timer=0;
     const setH=t=>{if(S.hint!==t){S.hint=t;setHint(t)}};
-    const id=setInterval(()=>{
-      const v=vref.current,o=oref.current;if(!v||!o||!v.videoWidth)return;
-      const w=400,sc=w/v.videoWidth,hh=Math.round(v.videoHeight*sc),c=sm.current;c.width=w;c.height=hh;
+    const step=()=>{
+      const v=vref.current,o=oref.current;
+      if(!v||!o||!v.videoWidth||S.hold||document.hidden)return;
+      const w=320,hh=Math.round(v.videoHeight*w/v.videoWidth),c=smc.current||(smc.current=$c(w,hh));
+      if(c.width!==w||c.height!==hh){c.width=w;c.height=hh}
       const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,w,hh);
       const {mode:M,flash:F,auto:A,live:L}=cb.current;
-      if(F==='auto'){const d=x.getImageData(0,0,w,hh).data;let s=0,n=0;for(let i=0;i<d.length;i+=64){s+=d[i]*.3+d[i+1]*.6+d[i+2]*.1;n++}setTorch(s/n<55)}
+      if(F==='auto'&&(S.n++%8===0)){
+        const d=x.getImageData(0,0,w,hh).data;let s=0,n=0;for(let i=0;i<d.length;i+=64){s+=d[i]*.3+d[i+1]*.6+d[i+2]*.1;n++}
+        const lum=s/n;if(!S.torch&&lum<45)setTorch(true);else if(S.torch&&lum>150)setTorch(false);
+      }
       const md=MODES.find(q=>q.k===M);
-      o.width=v.videoWidth;o.height=v.videoHeight;const g=o.getContext('2d');g.clearRect(0,0,o.width,o.height);
+      if(o.width!==w||o.height!==hh){o.width=w;o.height=hh}
+      const g=o.getContext('2d');g.clearRect(0,0,w,hh);
       if(!(md.detect&&(L||!A))){S.pts=null;S.still=0;S.armed=true;setH('');return}
       let pts=null;try{pts=detectCv(c,.12)}catch{}
       if(pts){
         const mv=S.pts?Math.max(...pts.map((p,i)=>Math.hypot(p.x-S.pts[i].x,p.y-S.pts[i].y)))/w:1;
         S.still=mv<.025?S.still+1:0;if(mv>.08)S.armed=true;S.pts=pts;
-        g.fillStyle='rgba(34,197,94,.22)';g.strokeStyle='#22c55e';g.lineWidth=Math.max(3,o.width/200);g.lineJoin='round';g.beginPath();
-        pts.forEach((p,i)=>i?g.lineTo(p.x/sc,p.y/sc):g.moveTo(p.x/sc,p.y/sc));g.closePath();g.fill();g.stroke();
-        g.fillStyle='#fff';pts.forEach(p=>{g.beginPath();g.arc(p.x/sc,p.y/sc,Math.max(6,o.width/120),0,7);g.fill()});
+        g.fillStyle='rgba(34,197,94,.22)';g.strokeStyle='#22c55e';g.lineWidth=2;g.lineJoin='round';g.beginPath();
+        pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.closePath();g.fill();g.stroke();
+        g.fillStyle='#fff';pts.forEach(p=>{g.beginPath();g.arc(p.x,p.y,3.5,0,7);g.fill()});
         if(!A)setH('Document found');
         else if(!S.armed)setH('Move to the next page');
-        else setH(S.still>=5?'Capturing…':'Hold steady… '+Math.min(99,Math.round(S.still/5*100))+'%');
-        if(A&&L&&S.armed&&S.still>=5&&Date.now()>S.cool){S.armed=false;S.cool=Date.now()+2500;shootRef.current()}
+        else setH(S.still>=4?'Capturing…':'Hold steady… '+Math.min(99,Math.round(S.still/4*100))+'%');
+        if(A&&L&&S.armed&&S.still>=4&&Date.now()>S.cool){S.armed=false;S.cool=Date.now()+2500;shootRef.current()}
       }else{S.pts=null;S.still=0;S.armed=true;setH('Looking for the page…')}
-    },300);
-    return()=>clearInterval(id)},[ready,cvOk]);
+    };
+    const loop=()=>{if(!alive)return;try{step()}catch(e){}timer=setTimeout(loop,170)};
+    loop();
+    return()=>{alive=false;clearTimeout(timer)}},[ready,cvOk]);
 
   const focus=async e=>{
     const r=e.currentTarget.getBoundingClientRect();setRing({x:e.clientX-r.left,y:e.clientY-r.top});setTimeout(()=>setRing(null),900);
     const tr=st.current.stream&&st.current.stream.getVideoTracks()[0];if(!tr)return;
-    try{await tr.applyConstraints({advanced:[{focusMode:'single-shot',pointsOfInterest:[{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}]}]})}catch{}};
+    const fm=st.current.caps.focusMode||[];if(!fm.includes('single-shot'))return;
+    try{await tr.applyConstraints({advanced:[{focusMode:'single-shot',pointsOfInterest:[{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}]}]});
+      if(fm.includes('continuous'))setTimeout(()=>{const t2=st.current.stream&&st.current.stream.getVideoTracks()[0];t2&&t2.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{})},1800)}catch{}};
   const tap=e=>{focus(e);if(auto&&md0.detect&&!live)setLive(true)};
   const setExp=async v=>{setEv(v);const tr=st.current.stream.getVideoTracks()[0];try{await tr.applyConstraints({advanced:[{exposureCompensation:v}]})}catch{}};
   const setZm=async v=>{setZoom(v);const tr=st.current.stream.getVideoTracks()[0];try{await tr.applyConstraints({advanced:[{zoom:v}]})}catch{}};
@@ -349,26 +659,26 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
   const good=/^(Hold|Capturing|Document found)/.test(hint),searching=hint==='Looking for the page…';
   const side='grid h-12 w-12 place-items-center rounded-full transition active:scale-90';
 
-  return <div className="fixed inset-0 z-20 flex flex-col bg-black text-white select-none">
+  return <div className="fixed inset-0 z-20 flex flex-col bg-black text-white select-none" style={{overscrollBehavior:'none'}}>
     <div className="flex h-14 shrink-0 items-center justify-between bg-black px-3 pt-[env(safe-area-inset-top)]">
       <button onClick={onHome} className={side} title="Home"><Icon n="home" c="h-7 w-7"/></button>
       <button onClick={()=>setFacing(f=>f==='environment'?'user':'environment')} className={side} title="Switch camera"><Icon n="flip" c="h-6 w-6"/></button>
       <div className={'grid h-8 w-12 place-items-center rounded-full '+(ready?'bg-green-500 text-white':err?'bg-red-500':'animate-pulse bg-yellow-400 text-black')} title={ready?'Camera on':err?'Camera off':'Starting camera'}><Icon n="camera" c="h-5 w-5"/></div>
     </div>
     <div className="relative flex-1 overflow-hidden bg-black" onClick={tap}>
-      <video ref={vref} playsInline muted className={'absolute inset-0 h-full w-full object-contain '+mir}/>
+      <video ref={vref} autoPlay playsInline muted className={'absolute inset-0 h-full w-full object-contain '+mir}/>
       <canvas ref={oref} className={'pointer-events-none absolute inset-0 h-full w-full object-contain '+mir}/>
       {ready&&searching&&<div className="pointer-events-none absolute inset-6"><span className="corner left-0 top-0 rounded-tl-2xl border-l-4 border-t-4"/><span className="corner right-0 top-0 rounded-tr-2xl border-r-4 border-t-4"/><span className="corner bottom-0 left-0 rounded-bl-2xl border-b-4 border-l-4"/><span className="corner bottom-0 right-0 rounded-br-2xl border-b-4 border-r-4"/><div className="scanline"/></div>}
       {ready&&auto&&!live&&md0.detect&&<div className="pointer-events-none absolute inset-x-4 top-1/2 -translate-y-1/2 rounded-lg bg-black/60 px-6 py-7 text-center text-[17px] leading-snug text-white/90">{md0.tip}</div>}
       {ready&&!cvOk&&<div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-4 py-1.5 text-sm">Loading scanner engine…</div>}
-      {hint&&ready&&cvOk&&<div className={'pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium backdrop-blur '+(good?'bg-green-500/90 text-black':'bg-black/60')}>{hint}</div>}
+      {hint&&ready&&cvOk&&<div className={'pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium '+(good?'bg-green-500/90 text-black':'bg-black/60')}>{hint}</div>}
       {ring&&<div className="pointer-events-none absolute h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300" style={{left:ring.x,top:ring.y}}/>}
       {snap&&<div className="pointer-events-none absolute inset-0 bg-white/80"/>}
-      {hasCtl&&<div onClick={e=>e.stopPropagation()} className="absolute bottom-3 left-1/2 w-60 -translate-x-1/2 space-y-1 rounded-2xl bg-black/50 px-3 py-1.5 text-xs backdrop-blur">
+      {hasCtl&&<div onClick={e=>e.stopPropagation()} className="absolute bottom-3 left-1/2 w-60 -translate-x-1/2 space-y-1 rounded-2xl bg-black/50 px-3 py-1.5 text-xs">
         {caps.exposureCompensation&&<div>☀ <input type="range" className="w-44 align-middle accent-white" min={caps.exposureCompensation.min} max={caps.exposureCompensation.max} step={caps.exposureCompensation.step||.1} value={ev} onChange={e=>setExp(+e.target.value)}/></div>}
         {caps.zoom&&<div>🔍 <input type="range" className="w-44 align-middle accent-white" min={caps.zoom.min} max={caps.zoom.max} step={caps.zoom.step||.1} value={zoom} onChange={e=>setZm(+e.target.value)}/></div>}
       </div>}
-      {err&&<div onClick={e=>e.stopPropagation()} className="absolute inset-0 grid place-items-center bg-black/90 p-6 text-center"><div className="max-w-xs"><div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-full bg-white/10"><Icon n="camera" c="h-7 w-7"/></div><p className="mb-4 text-sm text-white/80">{err}</p><div className="flex justify-center gap-2"><Btn onClick={()=>setRetry(n=>n+1)}>Retry</Btn><ImportBtn onFiles={onImport} className="inline-flex items-center rounded-xl bg-gradient-to-br from-[#ff4b3a] to-[#d90b00] px-4 py-2.5 text-sm font-semibold">Import from gallery</ImportBtn></div></div></div>}
+      {err&&<div onClick={e=>e.stopPropagation()} className="absolute inset-0 grid place-items-center bg-black/90 p-6 text-center"><div className="max-w-xs"><div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-full bg-white/10"><Icon n="camera" c="h-7 w-7"/></div><p className="mb-4 text-sm text-white/80">{err}</p><div className="flex justify-center gap-2"><Btn onClick={()=>{setRetry(n=>n+1);if(!cvOk)initCv()}}>Retry</Btn><ImportBtn onFiles={onImport} className="inline-flex items-center rounded-xl bg-gradient-to-br from-[#ff4b3a] to-[#d90b00] px-4 py-2.5 text-sm font-semibold">Import from gallery</ImportBtn></div></div></div>}
     </div>
     <div className="shrink-0 bg-black pb-[max(env(safe-area-inset-bottom),12px)] pt-1">
       {mode==='book'&&<div className="flex justify-center pb-1"><button onClick={()=>setSplit(s=>!s)} className={'flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 '+(split?'bg-[#4aa3ff] text-black':'bg-white/10 text-white/70')}><Icon n="split" c="h-4 w-4"/>Split spread into 2 pages: {split?'ON':'OFF'}</button></div>}
@@ -392,62 +702,97 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
   </div>;
 }
 
-/* ---------- Crop editor (draggable corners + magnifier loupe) ---------- */
+/* ---------- Crop editor (draggable corners + magnifier loupe, drawn on a small copy) ---------- */
 function CropView({src,corners,onChange}){
-  const ref=useRef(),drag=useRef(-1),[pts,setPts]=useState(corners),[act,setAct]=useState(-1);
-  useEffect(()=>setPts(corners),[corners]);
-  useEffect(()=>{const c=ref.current;c.width=src.width;c.height=src.height;const g=c.getContext('2d');g.drawImage(src,0,0);
-    const r=Math.max(14,src.width/45),lw=Math.max(3,src.width/300);
+  const ref=useRef(),drag=useRef(-1),pr=useRef(corners),[pts,setPts]=useState(corners),[act,setAct]=useState(-1);
+  const sc=Math.min(1,1000/Math.max(src.width,src.height)),W=Math.max(1,Math.round(src.width*sc)),H=Math.max(1,Math.round(src.height*sc));
+  const bg=useMemo(()=>{const c=$c(W,H),x=c.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(src,0,0,W,H);return c},[src,W,H]);
+  useEffect(()=>{pr.current=corners;setPts(corners)},[corners]);
+  useEffect(()=>{const c=ref.current;if(c.width!==W||c.height!==H){c.width=W;c.height=H}
+    const g=c.getContext('2d');g.drawImage(bg,0,0);
+    const r=Math.max(12,W/40),lw=Math.max(2,W/300),q=pts.map(p=>({x:p.x*sc,y:p.y*sc}));
     g.lineWidth=lw;g.strokeStyle='#22c55e';g.fillStyle='rgba(34,197,94,.15)';g.lineJoin='round';
-    g.beginPath();orderPts(pts).forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.closePath();g.fill();g.stroke();
-    pts.forEach(p=>{g.beginPath();g.arc(p.x,p.y,r,0,7);g.fillStyle='#fff';g.fill();g.stroke()});
-    if(act>=0&&pts[act]){
-      const p=pts[act],R=src.width/7,right=p.x<src.width/2&&p.y<src.height/3,cx=right?src.width-R-10:R+10,cy=R+10;
+    g.beginPath();orderPts(q).forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.closePath();g.fill();g.stroke();
+    q.forEach(p=>{g.beginPath();g.arc(p.x,p.y,r,0,7);g.fillStyle='#fff';g.fill();g.stroke()});
+    if(act>=0&&q[act]){
+      const p=q[act],R=W/7,right=p.x<W/2&&p.y<H/3,cx=right?W-R-10:R+10,cy=R+10,rs=(2*R/3)/sc;
       g.save();g.beginPath();g.arc(cx,cy,R,0,7);g.clip();g.fillStyle='#fff';g.fillRect(cx-R,cy-R,2*R,2*R);
-      g.drawImage(src,p.x-R/3,p.y-R/3,2*R/3,2*R/3,cx-R,cy-R,2*R,2*R);g.restore();
+      g.drawImage(src,pts[act].x-rs/2,pts[act].y-rs/2,rs,rs,cx-R,cy-R,2*R,2*R);g.restore();
       g.beginPath();g.arc(cx,cy,R,0,7);g.lineWidth=lw*1.5;g.strokeStyle='#22c55e';g.stroke();
       g.beginPath();g.moveTo(cx-R/4,cy);g.lineTo(cx+R/4,cy);g.moveTo(cx,cy-R/4);g.lineTo(cx,cy+R/4);g.lineWidth=lw/1.5;g.strokeStyle='#eb1000';g.stroke();
     }
-  },[src,pts,act]);
+  },[bg,pts,act,W,H]);
   const pos=e=>{const b=ref.current.getBoundingClientRect();return{x:Math.min(src.width,Math.max(0,(e.clientX-b.left)*src.width/b.width)),y:Math.min(src.height,Math.max(0,(e.clientY-b.top)*src.height/b.height))}};
-  const end=()=>{if(drag.current>=0){drag.current=-1;setAct(-1);onChange(pts)}};
+  const end=()=>{if(drag.current>=0){drag.current=-1;setAct(-1);onChange(pr.current)}};
   return <canvas ref={ref} className="mx-auto max-h-[60vh] max-w-full rounded-xl shadow-md ring-1 ring-slate-200" style={{touchAction:'none'}}
-    onPointerDown={e=>{const p=pos(e);let bi=-1,bd=1e9;pts.forEach((q,i)=>{const d=Math.hypot(q.x-p.x,q.y-p.y);if(d<bd){bd=d;bi=i}});
+    onPointerDown={e=>{const p=pos(e);let bi=-1,bd=1e9;pr.current.forEach((q,i)=>{const d=Math.hypot(q.x-p.x,q.y-p.y);if(d<bd){bd=d;bi=i}});
       if(bd<src.width/6){drag.current=bi;setAct(bi);e.currentTarget.setPointerCapture(e.pointerId)}}}
-    onPointerMove={e=>{if(drag.current<0)return;const p=pos(e);setPts(ps=>ps.map((q,i)=>i===drag.current?p:q))}}
+    onPointerMove={e=>{if(drag.current<0)return;const p=pos(e),n=pr.current.map((q,i)=>i===drag.current?p:q);pr.current=n;setPts(n)}}
     onPointerUp={end} onPointerCancel={end}/>;
 }
 
-/* ---------- Edit screen ---------- */
+/* ---------- Edit screen (live preview on a small copy, full-resolution result applied when you pause) ---------- */
+const mkLp=q=>({filter:q.filter,br:q.br||0,ct:q.ct||0,sh:q.sh||0,ex:q.ex||0,it:q.it==null?100:q.it});
 function Edit({page:p,idx,total,upd,run,onBack,onNav,applyAll}){
-  const [view,setView]=useState('crop');
-  const reset=()=>run('Resetting…',async()=>{await cvReady();const md=MODES.find(x=>x.k===p.m)||MODES[2];let d=null;try{d=md.detect?detectFull(p.src):null}catch{}
-    await upd(p.id,{corners:d||fullFrame(p.src),filter:md.f,br:0,ct:md.ct||0})});
+  const [view,setView]=useState('result');
+  const [lp,setLp]=useState(()=>mkLp(p)),[prev,setPrev]=useState(null);
+  const lpR=useRef(lp),timer=useRef(null),pend=useRef(null),raf=useRef(0),pRef=useRef(p);pRef.current=p;
+  useEffect(()=>{if(timer.current)return;const n=mkLp(p);lpR.current=n;setLp(n);setPrev(null)},[p.id,p.v]);
+  useEffect(()=>()=>{cancelAnimationFrame(raf.current)},[]);
+  const flush=()=>{if(timer.current){clearTimeout(timer.current);timer.current=null;const f=pend.current;pend.current=null;f&&f()}};
+  const showPrev=()=>{if(raf.current)return;raf.current=requestAnimationFrame(()=>{raf.current=0;
+    try{const fe=getFlat(pRef.current);setPrev(enhance(getProxy(fe,1000),lpR.current,{noise:0}))}catch(e){}})};
+  const change=patch=>{
+    const n={...lpR.current,...patch};lpR.current=n;setLp(n);showPrev();
+    const id=pRef.current.id;pend.current=()=>upd(id,n);
+    clearTimeout(timer.current);
+    timer.current=setTimeout(()=>{timer.current=null;const f=pend.current;pend.current=null;f&&f()},450);
+  };
+  const reset=()=>run('Resetting…',async()=>{flush();await cvReady();const md=MODES.find(x=>x.k===p.m)||MODES[2];let d=null;try{d=md.detect?detectFull(p.src):null}catch{}
+    await upd(p.id,{corners:d||exactFrame(p.src),filter:md.f,br:0,ct:md.ct||0,sh:0,ex:0,it:100})});
+  const fe=useMemo(()=>{try{return getFlat(p)}catch(e){return null}},[p.id,p.sv,p.corners,p.src,p.aspect]);
+  const after=prev||p.result;
   return <div className="fade mx-auto max-w-3xl pb-10">
-    <Bar title={`Edit page ${idx+1} / ${total}`} onBack={onBack} right={<Btn red onClick={onBack} className="!py-1.5"><Icon n="check" c="h-4 w-4"/>Done</Btn>}/>
+    <Bar title={`Edit page ${idx+1} / ${total}`} onBack={()=>{flush();onBack()}} right={<Btn red onClick={()=>{flush();onBack()}} className="!py-1.5"><Icon n="check" c="h-4 w-4"/>Done</Btn>}/>
     <div className="flex flex-wrap items-center gap-1.5 p-3">
       {[['crop','Crop'],['result','Result'],['compare','Before / After']].map(([v,l])=><button key={v} onClick={()=>setView(v)} className={'tab '+(view===v?'on':'')}>{l}</button>)}
-      <span className="ml-auto flex gap-1"><Btn disabled={idx===0} onClick={()=>onNav(-1)} className="!px-2.5 !py-1.5"><Icon n="left" c="h-4 w-4"/></Btn><Btn disabled={idx===total-1} onClick={()=>onNav(1)} className="!px-2.5 !py-1.5"><Icon n="right" c="h-4 w-4"/></Btn></span>
+      <span className="ml-auto flex gap-1"><Btn disabled={idx===0} onClick={()=>{flush();onNav(-1)}} className="!px-2.5 !py-1.5"><Icon n="left" c="h-4 w-4"/></Btn><Btn disabled={idx===total-1} onClick={()=>{flush();onNav(1)}} className="!px-2.5 !py-1.5"><Icon n="right" c="h-4 w-4"/></Btn></span>
     </div>
     <div className="px-3">
       {view==='crop'&&<CropView src={p.src} corners={p.corners} onChange={c=>upd(p.id,{corners:c})}/>}
-      {view==='result'&&<CanvasView canvas={p.result}/>}
-      {view==='compare'&&<div className="grid grid-cols-2 gap-2"><div><div className="mb-1 text-center text-[11px] font-bold tracking-wider text-slate-500">BEFORE</div><CanvasView canvas={p.src}/></div><div><div className="mb-1 text-center text-[11px] font-bold tracking-wider text-[#eb1000]">AFTER</div><CanvasView canvas={p.result}/></div></div>}
+      {view==='result'&&<CanvasView canvas={after}/>}
+      {view==='compare'&&fe&&<Wipe before={getProxy(fe,1400)} after={after}/>}
+      {view!=='crop'&&<p className="mt-2 text-center text-[11px] text-slate-400">{prev?'Live preview · full-resolution version is applied when you stop adjusting':'Showing full-resolution result'}</p>}
     </div>
     <div className="no-scrollbar flex gap-2 overflow-x-auto p-3">
       <Btn onClick={()=>run('Detecting edges…',async()=>{await cvReady();const d=detectFull(p.src);if(!d)throw new Error('No document edges found. Drag the corners manually.');await upd(p.id,{corners:d})})} className="shrink-0"><Icon n="wand" c="h-4 w-4"/>Auto-detect</Btn>
-      <Btn onClick={()=>upd(p.id,{corners:fullFrame(p.src)})} className="shrink-0"><Icon n="crop" c="h-4 w-4"/>Full page</Btn>
-      <Btn onClick={()=>run('Rotating…',()=>upd(p.id,{src:rotCanvas(p.src),corners:rotPts(p.corners,p.src.height)}))} className="shrink-0"><Icon n="rotate" c="h-4 w-4"/>Rotate</Btn>
+      <Btn onClick={()=>upd(p.id,{corners:exactFrame(p.src)})} className="shrink-0"><Icon n="crop" c="h-4 w-4"/>Full page</Btn>
+      <Btn onClick={()=>run('Rotating…',()=>upd(p.id,{src:rotCanvas(p.src),corners:rotPts(p.corners,p.src.height),sv:(p.sv||0)+1}))} className="shrink-0"><Icon n="rotate" c="h-4 w-4"/>Rotate</Btn>
       <Btn onClick={reset} className="shrink-0">Reset</Btn>
     </div>
     <div className="px-3"><Card className="space-y-3">
       <div className="text-xs font-bold tracking-wider text-slate-400">FILTERS</div>
-      <div className="no-scrollbar flex gap-1.5 overflow-x-auto">{FILTERS.map(([k,l])=><button key={k} onClick={()=>run('Applying filter…',()=>upd(p.id,{filter:k}))} className={'tab '+(p.filter===k?'on':'')}>{l}</button>)}</div>
-      <Slider label="Brightness" value={p.br} min={-100} max={100} onCommit={v=>upd(p.id,{br:v})}/>
-      <Slider label="Contrast" value={p.ct} min={-100} max={100} onCommit={v=>upd(p.id,{ct:v})}/>
-      <Btn onClick={()=>applyAll({filter:p.filter,br:p.br,ct:p.ct})} className="w-full">Apply this look to all pages</Btn>
+      <div className="no-scrollbar flex gap-1.5 overflow-x-auto">{FILTERS.map(([k,l])=><button key={k} onClick={()=>change({filter:k})} className={'tab '+(lp.filter===k?'on':'')}>{l}</button>)}</div>
+      <div className="text-xs font-bold tracking-wider text-slate-400">ADJUSTMENTS</div>
+      <Slider label="Exposure" value={lp.ex} min={-100} max={100} onChange={v=>change({ex:v})}/>
+      <Slider label="Brightness" value={lp.br} min={-100} max={100} onChange={v=>change({br:v})}/>
+      <Slider label="Contrast" value={lp.ct} min={-100} max={100} onChange={v=>change({ct:v})}/>
+      <Slider label="Sharpness (0 = automatic)" value={lp.sh} min={-100} max={100} onChange={v=>change({sh:v})}/>
+      <Slider label="Filter intensity" value={lp.it} min={0} max={100} def={100} onChange={v=>change({it:v})}/>
+      <div className="flex gap-2">
+        <Btn onClick={()=>change({br:0,ct:0,sh:0,ex:0,it:100})} className="flex-1">Reset sliders</Btn>
+        <Btn onClick={()=>{flush();applyAll({...lpR.current})}} className="flex-1">Apply to all pages</Btn>
+      </div>
     </Card></div>
   </div>;
+}
+
+/* Original vs Enhanced for one page (opened from the Create PDF screen) */
+function CompareModal({page,onClose}){
+  const [d,setD]=useState(null);
+  useEffect(()=>{try{setD({b:getProxy(getFlat(page),1400),a:page.result})}catch(e){}},[page.id,page.v]);
+  return <div className="fade fixed inset-0 z-40 flex flex-col bg-slate-50"><Bar title="Original vs Enhanced" onBack={onClose}/>
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">{d?<Wipe before={d.b} after={d.a}/>:<p className="p-8 text-center text-sm text-slate-500">Preparing comparison…</p>}</div></div>;
 }
 
 /* ---------- Pages (multi-page manager) ---------- */
@@ -465,8 +810,8 @@ function Pages({pages,setPages,go,onEdit,onRetake,onImport,onDelete,onOcr}){
     </div>
     {!pages.length&&<div className="p-12 text-center text-slate-400"><div className="mx-auto mb-3 grid h-16 w-16 place-items-center rounded-2xl bg-slate-100"><Icon n="file" c="h-8 w-8"/></div>No pages yet. Scan or import to begin.</div>}
     <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">{pages.map((p,i)=>
-      <div key={p.id} className={'fade overflow-hidden rounded-2xl bg-white p-2 shadow-sm ring-2 transition '+(p.sel?'ring-[#eb1000]':'ring-slate-200')}>
-        <div className="relative overflow-hidden rounded-xl bg-slate-100"><img src={p.thumb} className="w-full" onClick={()=>onEdit(p.id)}/>
+      <div key={p.id} style={{contentVisibility:'auto',containIntrinsicSize:'180px 260px'}} className={'overflow-hidden rounded-2xl bg-white p-2 shadow-sm ring-2 transition '+(p.sel?'ring-[#eb1000]':'ring-slate-200')}>
+        <div className="relative overflow-hidden rounded-xl bg-slate-100"><img src={p.thumb} decoding="async" className="w-full" onClick={()=>onEdit(p.id)}/>
           <span className="absolute left-1.5 top-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[11px] font-semibold text-white">{i+1}</span>
           <button onClick={()=>setPages(ps=>ps.map(x=>x.id===p.id?{...x,sel:!x.sel}:x))} className={'absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full border-2 transition '+(p.sel?'border-transparent bg-[#eb1000] text-white':'border-white bg-black/30 text-transparent')}><Icon n="check" c="h-3.5 w-3.5"/></button></div>
         <div className="mt-1.5 flex justify-between">
@@ -474,7 +819,7 @@ function Pages({pages,setPages,go,onEdit,onRetake,onImport,onDelete,onOcr}){
           <button className={ib} title="Edit / crop / filter" onClick={()=>onEdit(p.id)}><Icon n="edit" c="h-4 w-4"/></button><button className={ib} title="Retake" onClick={()=>onRetake(i)}><Icon n="camera" c="h-4 w-4"/></button>
           <button className={ib+' !text-red-500'} title="Delete" onClick={()=>onDelete([p.id])}><Icon n="trash" c="h-4 w-4"/></button></div>
       </div>)}</div>
-    <div className="fixed inset-x-0 bottom-0 z-10 border-t border-slate-200/70 bg-white/85 p-3 pb-[max(env(safe-area-inset-bottom),12px)] backdrop-blur-xl"><div className="mx-auto flex max-w-3xl gap-2">
+    <div className="fixed inset-x-0 bottom-0 z-10 border-t border-slate-200/70 bg-white/95 p-3 pb-[max(env(safe-area-inset-bottom),12px)]"><div className="mx-auto flex max-w-3xl gap-2">
       <Btn onClick={()=>go('camera')}><Icon n="camera" c="h-4 w-4"/>Scan</Btn>
       <ImportBtn onFiles={onImport} className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm"><Icon n="image" c="h-4 w-4"/>Import</ImportBtn>
       <Btn red className="ml-auto" disabled={!sel} onClick={()=>go('pdf')}><Icon n="file" c="h-4 w-4"/>Create PDF ({sel})</Btn>
@@ -497,30 +842,34 @@ function OcrModal({text,onClose,say}){
 
 /* ---------- PDF creation screen ---------- */
 function PdfScreen({pages,go,run,setBusy,onDone}){
-  const [o,setO]=useState({name:'Scan '+new Date().toISOString().slice(0,10),size:'A4',orient:'auto',q:80,compress:false,margin:5,pw:''});
-  const [prev,setPrev]=useState(null),[info,setInfo]=useState('');
+  const [o,setO]=useState({name:'Scan '+new Date().toISOString().slice(0,10),size:'A4',orient:'auto',q:92,compress:false,margin:5,pw:''});
+  const [prev,setPrev]=useState(null),[info,setInfo]=useState(''),[cmp,setCmp]=useState(null);
+  const cache=useRef({k:'',b:null});
   const set=(k,v)=>{setO(x=>({...x,[k]:v}));setPrev(null)};
-  const make=()=>buildPdf(pages.map(p=>p.result),o,(i,n)=>setBusy({t:`Building PDF: page ${i+1} of ${n}`}));
+  const key=()=>{const {name:_n,...r}=o;return JSON.stringify(r)+'|'+pages.map(p=>p.id+':'+(p.v||0)).join(',')};
+  const make=async()=>{const k=key();if(cache.current.k===k&&cache.current.b)return cache.current.b;
+    const b=await buildPdf(pages.map(p=>p.result),o,(i,n)=>setBusy({t:`Building PDF: page ${i+1} of ${n}`}),pages.map(p=>p.filter==='bw'||p.filter==='gray'));cache.current={k,b};return b};
   const name=()=>(o.name.trim()||'scan').replace(/\.pdf$/i,'')+'.pdf';
   return <div className="fade mx-auto max-w-xl pb-10">
     <Bar title="Create PDF" onBack={()=>go('pages')}/>
     <div className="space-y-3 p-4 text-sm">
       <Card>
-        <p className="mb-2 text-xs font-bold tracking-wider text-slate-400">{pages.length} PAGE(S) · IN THIS ORDER</p>
-        <div className="no-scrollbar flex gap-2 overflow-x-auto">{pages.map((p,i)=><div key={p.id} className="relative shrink-0"><img src={p.thumb} className="h-24 rounded-lg shadow ring-1 ring-slate-200"/><span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 text-[10px] text-white">{i+1}</span></div>)}</div>
+        <p className="mb-2 text-xs font-bold tracking-wider text-slate-400">{pages.length} PAGE(S) · TAP A PAGE TO COMPARE ORIGINAL VS ENHANCED</p>
+        <div className="no-scrollbar flex gap-2 overflow-x-auto">{pages.map((p,i)=><button key={p.id} onClick={()=>setCmp(p)} className="relative shrink-0 transition active:scale-95"><img src={p.thumb} decoding="async" className="h-24 rounded-lg shadow ring-1 ring-slate-200"/><span className="absolute bottom-1 left-1 rounded-full bg-black/70 px-1.5 text-[10px] text-white">{i+1}</span></button>)}</div>
       </Card>
       <Card className="space-y-3">
-        <label className="block font-medium">File name<input className={INP} value={o.name} onChange={e=>set('name',e.target.value)}/></label>
+        <label className="block font-medium">File name<input className={INP} value={o.name} onChange={e=>setO(x=>({...x,name:e.target.value}))}/></label>
         <div className="grid grid-cols-2 gap-3">
           <label className="font-medium">Page size<select className={INP} value={o.size} onChange={e=>set('size',e.target.value)}>{['A4','A3','Letter','Original'].map(s=><option key={s}>{s}</option>)}</select></label>
           <label className="font-medium">Orientation<select className={INP} value={o.orient} onChange={e=>set('orient',e.target.value)} disabled={o.size==='Original'}><option value="auto">Auto (per page)</option><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
         </div>
       </Card>
       <Card className="space-y-3">
-        <label className="block font-medium"><span className="flex justify-between"><span>Image quality</span><span className="text-slate-400">{o.q}%</span></span><input type="range" min="40" max="100" value={o.q} onChange={e=>set('q',+e.target.value)} className="w-full accent-red-600"/></label>
+        <label className="block font-medium"><span className="flex justify-between"><span>Image quality</span><span className="text-slate-400">{o.q}%</span></span><input type="range" min="60" max="100" value={o.q} onChange={e=>set('q',+e.target.value)} className="w-full accent-red-600"/></label>
         <label className="block font-medium"><span className="flex justify-between"><span>Margin</span><span className="text-slate-400">{o.margin} mm</span></span><input type="range" min="0" max="30" value={o.margin} onChange={e=>set('margin',+e.target.value)} className="w-full accent-red-600" disabled={o.size==='Original'}/></label>
         <label className="flex items-center gap-2 font-medium"><input type="checkbox" checked={o.compress} onChange={e=>set('compress',e.target.checked)} className="h-4 w-4 accent-red-600"/> Compress (downscale images to ~1600 px)</label>
         <label className="block font-medium"><span className="flex items-center gap-1"><Icon n="lock" c="h-3.5 w-3.5"/>Password (optional)</span><input type="password" className={INP} value={o.pw} onChange={e=>set('pw',e.target.value)} autoComplete="new-password"/></label>
+        <p className="text-xs text-slate-500">Pages keep their full scanned resolution and aspect ratio. Leave Compress off for the best quality.</p>
       </Card>
       <div className="flex gap-2">
         <Btn onClick={()=>run('Building preview…',async()=>{const b=await make();setPrev(b);setInfo(kb(b.size))})}><Icon n="eye" c="h-4 w-4"/>Preview</Btn>
@@ -528,6 +877,7 @@ function PdfScreen({pages,go,run,setBusy,onDone}){
       </div>
       {prev&&<div className="fade"><p className="mb-1 text-xs text-slate-500">Preview · {info}</p><PdfPreview blob={prev} password={o.pw}/></div>}
     </div>
+    {cmp&&<CompareModal page={cmp} onClose={()=>setCmp(null)}/>}
   </div>;
 }
 
@@ -584,9 +934,10 @@ function ToolPanel({t,run,say}){
   const mvO=(i,d)=>setOrder(o=>{const a=[...o],j=i+d;if(j<0||j>=a.length)return o;[a[i],a[j]]=[a[j],a[i]];return a});
   const go=()=>run('Working…',async()=>{
     if(!files.length)throw new Error('Choose a file first.');
+    await need('pdflib');
     const {PDFDocument,degrees,StandardFonts,rgb}=PDFLib,mk=(b,n)=>({blob:new Blob([b],{type:'application/pdf'}),name:n}),load=async f=>PDFDocument.load(await f.arrayBuffer());
     let out=[];
-    if(t==='img'){const cs=[];for(const f of files)cs.push(await fileToCanvas(f,3000));out=[{blob:await buildPdf(cs,{size,orient:'auto',q:90,margin:5}),name:'images.pdf'}]}
+    if(t==='img'){const cs=[];for(const f of files)cs.push(await fileToCanvas(f,MAXO));out=[{blob:await buildPdf(cs,{size,orient:'auto',q:93,margin:5}),name:'images.pdf'}]}
     else if(t==='merge'){if(files.length<2)throw new Error('Choose at least 2 PDFs.');const d=await PDFDocument.create();
       for(const f of files){const s=await load(f);(await d.copyPages(s,s.getPageIndices())).forEach(p=>d.addPage(p))}out=[mk(await d.save(),'merged.pdf')]}
     else if(t==='compress'){const L={low:[1,.5,1100],med:[1.3,.65,1500],high:[1.8,.8,2000]}[lvl];
@@ -635,25 +986,30 @@ function App(){
   const pr=useRef([]),idc=useRef(1),tt=useRef(),q=useRef(Promise.resolve());
   const setPagesS=f=>{const n=typeof f==='function'?f(pr.current):f;pr.current=n;setPages(n)};
   const say=(t,a)=>{setToast({t,a});clearTimeout(tt.current);tt.current=setTimeout(()=>setToast(null),a?6000:3000)};
-  const run=async(t,fn)=>{setBusy({t});try{await fn()}catch(e){say(e.message||String(e))}finally{setBusy(null)}};
+  const run=async(t,fn)=>{setBusy({t});await nextFrame();try{await fn()}catch(e){say(e.message||String(e))}finally{setBusy(null)}};
 
-  useEffect(()=>{cvReady().then(()=>setEng('ready')).catch(()=>setEng('failed'))},[]);
+  const boot=()=>{
+    const idle=window.requestIdleCallback||(f=>setTimeout(f,1500));
+    const pre=()=>idle(()=>{need('pdflib').catch(()=>{});need('pdfjs').catch(()=>{})});
+    cvReady().then(()=>{setEng('ready');pre()}).catch(()=>{setEng('failed');pre()});
+  };
+  useEffect(()=>{boot()},[]);
   useEffect(()=>{if(!pages.length)return;const h=e=>{e.preventDefault();e.returnValue=''};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[pages.length]);
 
   const upd=(id,patch)=>{q.current=q.current.then(async()=>{
     const cur=pr.current.find(x=>x.id===id);if(!cur)return;
     try{const np=await renderPage({...cur,...patch});
-      setPagesS(ps=>ps.map(x=>x.id===id?{...x,...patch,flat:np.flat,flatKey:np.flatKey,result:np.result,thumb:np.thumb}:x))}
+      setPagesS(ps=>ps.map(x=>x.id===id?{...x,...patch,result:np.result,thumb:np.thumb,v:np.v}:x))}
     catch(e){say(e.message)}});return q.current};
-  const applyAll=patch=>run('Applying to all pages…',async()=>{for(const id of pr.current.map(p=>p.id))await upd(id,patch)});
+  const applyAll=patch=>run('Applying to all pages…',async()=>{const ids=pr.current.map(p=>p.id);for(let i=0;i<ids.length;i++){setBusy({t:`Applying to page ${i+1} of ${ids.length}`});await upd(ids[i],patch)}});
   const newPage=(src,corners,opts={})=>{const mk=opts.mode||mode,md=MODES.find(x=>x.k===mk);
-    return renderPage({id:idc.current++,m:mk,src,corners:corners||fullFrame(src),filter:opts.filter||md.f,br:0,ct:opts.filter?0:(md.ct||0),aspect:opts.filter?undefined:md.aspect,sel:true});};
+    return renderPage({id:idc.current++,m:mk,src,corners:corners||exactFrame(src),filter:opts.filter||md.f,br:0,ct:opts.filter?0:(md.ct||0),sh:0,ex:0,it:100,aspect:opts.filter?undefined:md.aspect,sel:true,v:0,sv:0});};
   // Book mode: flatten the whole spread, then cut it in the middle into a left and a right page
   const makePages=async(src,corners,opts={})=>{
     const mk=opts.mode||mode;
     if(mk==='book'&&bookSplit&&!opts.filter){
       await cvReady();
-      const flat=warp(src,corners||fullFrame(src));
+      const flat=warp(src,corners||exactFrame(src));
       if(flat.width>=flat.height*1.1){
         const hw=Math.floor(flat.width/2),out=[];
         for(const [x,w] of [[0,hw],[hw,flat.width-hw]]){
@@ -671,8 +1027,9 @@ function App(){
   const importFiles=files=>run('Importing…',async()=>{
     const out=[],md=MODES.find(x=>x.k===mode);
     for(const f of files){
-      if(f.type==='application/pdf'){const cs=await pdfToCanvases(f,2,(i,n)=>setBusy({t:`Reading ${f.name}: ${i}/${n}`}));for(const c of cs)out.push(await newPage(c,fullFrame(c),{filter:'original'}))}
-      else if(f.type.startsWith('image/')){setBusy({t:'Processing '+f.name});const c=await fileToCanvas(f);await cvReady();let d=null;try{d=md.detect?detectFull(c,.1):null}catch{}out.push(...await makePages(c,d||fullFrame(c)))}
+      await nextFrame();
+      if(f.type==='application/pdf'||/\.pdf$/i.test(f.name)){const cs=await pdfToCanvases(f,'auto',(i,n)=>setBusy({t:`Reading ${f.name}: ${i}/${n}`}));for(const c of cs)out.push(await newPage(c,exactFrame(c),{filter:'original'}))}
+      else if(f.type.startsWith('image/')||/\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name)){setBusy({t:'Processing '+f.name});const c=await fileToCanvas(f);await cvReady();let d=null;try{d=md.detect?detectFull(c,.1):null}catch{}out.push(...await makePages(c,d||exactFrame(c)))}
     }
     if(!out.length)throw new Error('No supported images or PDFs selected.');
     setPagesS(ps=>[...ps,...out]);setScr('pages');
@@ -681,12 +1038,12 @@ function App(){
     say(ids.length+' page(s) deleted',{label:'UNDO',fn:()=>setPagesS(prev)})};
   const runOcr=lang=>run('Preparing OCR…',async()=>{
     const list=pr.current.filter(p=>p.sel);if(!list.length)throw new Error('Select at least one page.');
-    if(!window.Tesseract)throw new Error('OCR engine failed to load. Check your internet connection.');
+    await need('tess');
+    let idx=0,last='';
+    const worker=await Tesseract.createWorker(lang,1,{logger:m=>{const t=`OCR page ${Math.min(idx+1,list.length)}/${list.length}: ${m.status||''} ${m.progress?Math.round(m.progress*100)+'%':''}`;if(t!==last){last=t;setBusy({t})}}});
     const texts=[];
-    for(let i=0;i<list.length;i++){
-      const r=await Tesseract.recognize(list[i].result,lang,{logger:m=>{if(m.status)setBusy({t:`OCR page ${i+1}/${list.length}: ${m.status} ${m.progress?Math.round(m.progress*100)+'%':''}`})}});
-      texts.push(r.data.text.trim());
-    }
+    try{for(idx=0;idx<list.length;idx++){const r=await worker.recognize(list[idx].result);texts.push(r.data.text.trim())}}
+    finally{try{await worker.terminate()}catch{}}
     if(!texts.some(Boolean))throw new Error('No text found. Try the Black & White filter or a clearer photo.');
     setOcr(texts.map((t,i)=>(texts.length>1?`--- Page ${i+1} ---\n`:'')+t).join('\n\n'));
   });
@@ -702,7 +1059,7 @@ function App(){
         <div className="absolute -right-12 -top-12 h-52 w-52 rounded-full bg-white/10"/><div className="absolute -bottom-20 left-8 h-44 w-44 rounded-full bg-white/10"/><div className="absolute right-10 top-24 h-16 w-16 rounded-full bg-white/10"/>
         <div className="relative mx-auto max-w-xl">
           <div className="flex items-center gap-2 text-xl font-extrabold"><span className="grid h-10 w-10 place-items-center rounded-xl bg-white text-[#eb1000] shadow-lg">D</span>DocScan
-            <span className="ml-auto flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium backdrop-blur"><span className={'h-2 w-2 rounded-full '+(eng==='ready'?'bg-green-300':eng==='failed'?'bg-red-300':'animate-pulse bg-yellow-300')}/>{eng==='ready'?'Ready':eng==='failed'?'Engine failed':'Loading…'}</span></div>
+            <span onClick={()=>{if(eng==='failed'){setEng('loading');boot()}}} className="ml-auto flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium"><span className={'h-2 w-2 rounded-full '+(eng==='ready'?'bg-green-300':eng==='failed'?'bg-red-300':'animate-pulse bg-yellow-300')}/>{eng==='ready'?'Ready':eng==='failed'?'Engine failed · tap to retry':'Loading…'}</span></div>
           <h1 className="mt-8 text-[28px] font-extrabold leading-tight">Scan anything.<br/>Turn it into a PDF.</h1>
           <p className="mt-2 max-w-xs text-sm text-white/80">Auto edge detection, book mode, multi-page scanning, filters and OCR — all private, all on your device.</p>
         </div>
@@ -721,7 +1078,7 @@ function App(){
           <button onClick={()=>{setTool(null);go('tools')}} className={tile}><span className={bub('from-violet-400 to-purple-500')}><Icon n="grid"/></span>PDF Tools</button>
           <button onClick={()=>go('docs')} className={tile}><span className={bub('from-amber-400 to-orange-500')}><Icon n="folder"/></span>My Docs</button>
         </div>
-        <div className="no-scrollbar flex gap-2 overflow-x-auto pt-2">{['Auto crop','Book 2-page split','Perspective fix','6 filters','Hindi + English OCR','Password PDF'].map(x=><span key={x} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm ring-1 ring-slate-200/70">✓ {x}</span>)}</div>
+        <div className="no-scrollbar flex gap-2 overflow-x-auto pt-2">{['Auto crop','Book 2-page split','Perspective fix','6 filters','Live adjust + compare','Hindi + English OCR','Password PDF'].map(x=><span key={x} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm ring-1 ring-slate-200/70">✓ {x}</span>)}</div>
         <p className="pt-4 text-center text-xs text-slate-400">🔒 Everything is processed on your device. Nothing is uploaded.</p>
       </div></div>}
     {scr==='camera'&&<Camera mode={mode} setMode={setMode} split={bookSplit} setSplit={setBookSplit} count={pages.length} lastThumb={pages.length?pages[pages.length-1].thumb:null}
@@ -736,11 +1093,15 @@ function App(){
     {scr==='tools'&&<div className="mx-auto max-w-xl pb-10"><Bar title="PDF Tools" onBack={()=>tool?setTool(null):go('home')}/>
       {!tool?<div className="grid grid-cols-2 gap-3 p-4">{TOOLS.map(([k,n,i,g])=><button key={k} onClick={()=>setTool(k)} className="fade flex flex-col items-start gap-3 rounded-2xl bg-white p-4 text-left text-sm font-semibold shadow-sm ring-1 ring-slate-200/70 transition active:scale-95"><span className={'grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br text-xl shadow '+g}>{i}</span>{n}</button>)}</div>:<ToolPanel t={tool} run={run} say={say}/>}</div>}
     {ocr!==null&&<OcrModal text={ocr} onClose={()=>setOcr(null)} say={say}/>}
-    {busy&&<div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"><div className="flex max-w-[85vw] flex-col items-center gap-4 rounded-2xl bg-slate-900 px-8 py-6 text-center text-sm text-white shadow-2xl"><div className="spinner"/>{busy.t}</div></div>}
+    {busy&&<div className="fixed inset-0 z-50 grid place-items-center bg-black/60"><div className="flex max-w-[85vw] flex-col items-center gap-4 rounded-2xl bg-slate-900 px-8 py-6 text-center text-sm text-white shadow-2xl"><div className="spinner"/>{busy.t}</div></div>}
     {toast&&<div className={'fade fixed left-1/2 z-50 flex max-w-[90vw] -translate-x-1/2 items-center gap-3 rounded-full bg-slate-900 px-5 py-2.5 text-sm text-white shadow-xl '+(scr==='camera'?'bottom-60':'bottom-24')}>{toast.t}{toast.a&&<button className="font-bold text-yellow-300" onClick={()=>{toast.a.fn();setToast(null)}}>{toast.a.label}</button>}</div>}
   </div>;
 }
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>
+/* optional: caches the big libraries so the app opens fast from the 2nd visit (needs sw.js) */
+if('serviceWorker' in navigator)window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){})});
 </script>
 </body>
 </html>
