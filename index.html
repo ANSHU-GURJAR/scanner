@@ -102,7 +102,7 @@ const cvReady=()=>cvP||(cvP=new Promise((res,rej)=>{
 
 const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
   return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
-/* "full frame" is now the exact image (no hidden 2% crop), so Original stays untouched */
+/* "full frame" is the exact image (no hidden crop), so Original stays untouched */
 const exactFrame=c=>[{x:0,y:0},{x:c.width,y:0},{x:c.width,y:c.height},{x:0,y:c.height}];
 const fullFrame=exactFrame;
 
@@ -328,14 +328,15 @@ function enhance(flat,o,opt={}){
   if(f==='original'&&!br&&!ct&&!shp&&!ex)return flat;           // Original = untouched
   const noise=opt.noise||0,Pm=PRE[f]||null,own=[];
   const mk=()=>{const m=new cv.Mat();own.push(m);return m};
-  const lut8=(m,lut)=>{const L=cv.matFromArray(1,256,cv.CV_8UC1,lut),d=mk();cv.LUT(m,L,d);kill(L);kill(m);return d};
+  /* tone curve applied in plain JavaScript (cv.LUT is not available in the browser build of OpenCV.js) */
+  const lut8=(m,lut)=>{const d=m.data,L=new Uint8Array(lut),n=d.length;for(let i=0;i<n;i++)d[i]=L[d[i]];return m};
   try{
     const rgba=cv.imread(flat);own.push(rgba);
     let cur=mk();cv.cvtColor(rgba,cur,cv.COLOR_RGBA2RGB);kill(rgba);
     const longS=Math.max(cur.cols,cur.rows),orig=it<100?cur.clone():null;if(orig)own.push(orig);
     if(Pm){
-      if(noise>=2.2){const n=denoise(cur,noise);own.push(n);kill(cur);cur=n}
-      if(Pm.shade>0)shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6);
+      if(noise>=2.2){try{const n=denoise(cur,noise);own.push(n);kill(cur);cur=n}catch(e){}}   // optional step: skipped if unsupported
+      if(Pm.shade>0){try{shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6)}catch(e){}}   // optional step
       if(Pm.gray){const g=mk();cv.cvtColor(cur,g,cv.COLOR_RGB2GRAY);kill(cur);cur=g}
     }
     const sig=clamp(longS/2600,.6,1.6),thr=clamp(Math.round(2+noise),2,12),nf=1/(1+Math.max(0,noise-1.5)/4);
