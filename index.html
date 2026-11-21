@@ -57,7 +57,7 @@ body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;back
 <script type="text/babel" data-presets="react">
 const {useState,useEffect,useRef,useMemo}=React;
 
-/* ---------- lazy library loader (PDF / OCR libs load only when needed) ---------- */
+/* ---------- lazy library loader (PDF libs load only when needed) ---------- */
 const LIBS={
  pdfjs:{n:'PDF reader',u:['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js'],ok:()=>window.pdfjsLib,init:u=>{pdfjsLib.GlobalWorkerOptions.workerSrc=u.replace('pdf.min.js','pdf.worker.min.js')}},
  pdflib:{n:'PDF builder',u:['https://unpkg.com/pdf-lib-plus-encrypt/dist/pdf-lib.min.js','https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js','https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'],ok:()=>window.PDFLib},
@@ -84,30 +84,17 @@ const share=async(blob,name)=>{const f=new File([blob],name,{type:'application/p
   if(navigator.canShare&&navigator.canShare({files:[f]})){try{await navigator.share({files:[f],title:name})}catch(e){if(e.name!=='AbortError')throw e}return true}return false};
 const nextFrame=()=>new Promise(r=>{let d=false;const f=()=>{if(!d){d=true;r()}};requestAnimationFrame(()=>setTimeout(f,0));setTimeout(f,100)});
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
-const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
-const kill=m=>{try{if(m&&!m.isDeleted())m.delete()}catch(e){}};
-
-/* OpenCV loads AFTER the first screen is shown (it is ~10 MB) */
-const CV_SRC=['https://docs.opencv.org/4.8.0/opencv.js','https://docs.opencv.org/4.x/opencv.js','https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js'];
-let cvP=null;
-const cvReady=()=>cvP||(cvP=new Promise((res,rej)=>{
-  let i=0,n=0,asked=false;
-  const addScript=()=>{if(i>=CV_SRC.length)return;const s=document.createElement('script');s.async=true;s.dataset.lazy='1';s.src=CV_SRC[i++];s.onerror=()=>{s.remove();addScript()};document.head.appendChild(s)};
-  if(!(window.cv&&(window.cv.Mat||typeof window.cv.then==='function')))addScript();
-  const t=setInterval(()=>{const c=window.cv;
-    if(c&&c.Mat){clearInterval(t);res()}
-    else if(c&&typeof c.then==='function'&&!asked){asked=true;c.then(m=>{if(m&&m.Mat)window.cv=m})}
-    else if(++n>2400){clearInterval(t);cvP=null;rej(new Error('OpenCV.js failed to load. Check your internet connection.'))}},50);
-}));
 
 const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
   return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
-/* "full frame" is the exact image (no hidden crop), so Original stays untouched */
 const exactFrame=c=>[{x:0,y:0},{x:c.width,y:0},{x:c.width,y:c.height},{x:0,y:c.height}];
 const fullFrame=exactFrame;
+const exactQ=(c,W,H)=>{const [tl,tr,br,bl]=orderPts(c);
+  return tl.x<1.5&&tl.y<1.5&&Math.abs(tr.x-W)<1.5&&tr.y<1.5&&Math.abs(br.x-W)<1.5&&Math.abs(br.y-H)<1.5&&bl.x<1.5&&Math.abs(bl.y-H)<1.5};
 
-/* full-resolution limits: long side 4096 px and ~12.6 megapixels */
-const MAXO=4096,MAXPX=12.6e6;
+/* working-size limits: 4000 px / 10 MP on normal phones, 3000 px / 6.5 MP on low-RAM phones */
+const LOW=(navigator.deviceMemory||4)<=3;
+const MAXO=LOW?3000:4000,MAXPX=LOW?6.5e6:10e6;
 async function fileToCanvas(f,max=MAXO){
   let bmp;try{bmp=await createImageBitmap(f,{imageOrientation:'from-image'})}catch{bmp=await createImageBitmap(f)}
   const s=Math.min(1,max/Math.max(bmp.width,bmp.height),Math.sqrt(MAXPX/(bmp.width*bmp.height))),c=$c(Math.round(bmp.width*s),Math.round(bmp.height*s)),x=c.getContext('2d');
@@ -120,283 +107,385 @@ async function pdfToCanvases(file,scale=1.5,cb){
   for(let i=1;i<=d.numPages;i++){cb&&cb(i,d.numPages);const p=await d.getPage(i);
     let sc=scale;if(scale==='auto'){const v1=p.getViewport({scale:1});sc=clamp(2400/Math.max(v1.width,v1.height),1,4)}
     const vp=p.getViewport({scale:sc}),c=$c(Math.ceil(vp.width),Math.ceil(vp.height));
-    await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;out.push(c)}
+    await p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;out.push(c);
+    if(i%2===0)await nextFrame();}
   d.destroy&&d.destroy();
   return out;
 }
 
-/* ---------- OpenCV: edge detection ---------- */
-function quadOK(q){
-  for(let i=0;i<4;i++){const a=q[(i+3)%4],b=q[i],c=q[(i+1)%4];
-    const v1x=a.x-b.x,v1y=a.y-b.y,v2x=c.x-b.x,v2y=c.y-b.y;
-    const cs=(v1x*v2x+v1y*v2y)/(Math.hypot(v1x,v1y)*Math.hypot(v2x,v2y)+1e-9);
-    if(Math.abs(cs)>.62)return false}
-  return true}
-function detectCv(cnv,minFrac=.15){
-  const m=cv.imread(cnv),g=new cv.Mat(),e=new cv.Mat(),k3=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3)),k5=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
-  const area0=cnv.width*cnv.height;let best=null,bestA=area0*minFrac;
-  const consider=bin=>{const cs=new cv.MatVector(),h=new cv.Mat();
-    try{
-      cv.findContours(bin,cs,h,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
-      for(let i=0;i<cs.size();i++){
-        const c=cs.get(i);
+/* =====================================================================
+   OpenCV WORKER: all heavy image processing runs here, so the UI never freezes
+   ===================================================================== */
+function workerMain(){
+  const URLS=['https://docs.opencv.org/4.8.0/opencv.js','https://docs.opencv.org/4.x/opencv.js','https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js'];
+  const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+  const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
+  const kill=m=>{try{if(m&&!m.isDeleted())m.delete()}catch(e){}};
+  const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
+    return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
+
+  let loaded=false;
+  for(const u of URLS){try{importScripts(u);loaded=true;break}catch(e){}}
+  if(!loaded){postMessage({op:'fail',msg:'OpenCV.js failed to load. Check your internet connection.'});return}
+  let tries=0,asked=false;
+  const poll=setInterval(()=>{
+    const c=self.cv;
+    if(c&&c.Mat){clearInterval(poll);start()}
+    else if(c&&typeof c.then==='function'&&!asked){asked=true;c.then(m=>{if(m&&m.Mat)self.cv=m})}
+    else if(++tries>3000){clearInterval(poll);postMessage({op:'fail',msg:'OpenCV.js did not start. Check your internet connection.'})}
+  },50);
+
+  function start(){
+    const lowMem=(self.navigator&&self.navigator.deviceMemory||4)<=3;
+    const MAXO=lowMem?3000:4000,MAXPX=lowMem?6.5e6:10e6;
+    const mkRGBA=(buf,w,h)=>{const m=new cv.Mat(h,w,cv.CV_8UC4);m.data.set(new Uint8ClampedArray(buf));return m};
+    const post=(id,mat,extra)=>{
+      const d=new Uint8ClampedArray(mat.data);
+      postMessage(Object.assign({id,buf:d.buffer,w:mat.cols,h:mat.rows},extra||{}),[d.buffer]);
+    };
+
+    /* ----- edge detection ----- */
+    function quadOK(q){
+      for(let i=0;i<4;i++){const a=q[(i+3)%4],b=q[i],c=q[(i+1)%4];
+        const v1x=a.x-b.x,v1y=a.y-b.y,v2x=c.x-b.x,v2y=c.y-b.y;
+        const cs=(v1x*v2x+v1y*v2y)/(Math.hypot(v1x,v1y)*Math.hypot(v2x,v2y)+1e-9);
+        if(Math.abs(cs)>.62)return false}
+      return true}
+    function detectQuad(m,minFrac,deep){
+      const g=new cv.Mat(),e=new cv.Mat(),k3=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3)),k5=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
+      const area0=m.cols*m.rows;let best=null,bestA=area0*minFrac;
+      const consider=(bin,mode)=>{const cs=new cv.MatVector(),h=new cv.Mat();
         try{
-          const a0=cv.contourArea(c);if(a0<=bestA||a0>=area0*.99)continue;
-          const hull=new cv.Mat();
-          try{
-            cv.convexHull(c,hull,false,true);
-            const per=cv.arcLength(hull,true);
-            for(const eps of [.02,.03,.045,.06,.08]){
-              const ap=new cv.Mat();
+          cv.findContours(bin,cs,h,mode,cv.CHAIN_APPROX_SIMPLE);
+          for(let i=0;i<cs.size();i++){
+            const c=cs.get(i);
+            try{
+              const a0=cv.contourArea(c);if(a0<=bestA||a0>=area0*.99)continue;
+              const hull=new cv.Mat();
               try{
-                cv.approxPolyDP(hull,ap,eps*per,true);
-                if(ap.rows===4){
-                  const q=[0,1,2,3].map(j=>({x:ap.data32S[j*2],y:ap.data32S[j*2+1]})),a=cv.contourArea(ap);
-                  if(a>bestA&&a<area0*.985&&quadOK(q)){bestA=a;best=q}
-                  break;
+                cv.convexHull(c,hull,false,true);
+                const per=cv.arcLength(hull,true);
+                for(const eps of [.02,.03,.045,.06,.08]){
+                  const ap=new cv.Mat();
+                  try{
+                    cv.approxPolyDP(hull,ap,eps*per,true);
+                    if(ap.rows===4){
+                      const q=[0,1,2,3].map(j=>({x:ap.data32S[j*2],y:ap.data32S[j*2+1]})),a=cv.contourArea(ap);
+                      if(a>bestA&&a<area0*.985&&quadOK(q)){bestA=a;best=q}
+                      break;
+                    }
+                  }finally{ap.delete()}
                 }
-              }finally{ap.delete()}
-            }
-          }finally{hull.delete()}
-        }finally{c.delete()}
-      }
-    }finally{cs.delete();h.delete()}};
-  try{
-    cv.cvtColor(m,g,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(g,g,new cv.Size(5,5),0);
-    /* 1) Canny with thresholds taken from the image brightness */
-    const d=g.data,hs=new Uint32Array(256);for(let i=0;i<d.length;i+=7)hs[d[i]]++;
-    let tot=0;for(let i=0;i<256;i++)tot+=hs[i];let acc=0,med=128;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=tot/2){med=i;break}}
-    cv.Canny(g,e,Math.max(20,.66*med*.6),Math.min(255,Math.max(80,1.33*med*.8)));cv.dilate(e,e,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e);
-    /* 2) Otsu (light page on darker background) */
-    if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e)}
-    /* 3) inverse Otsu (dark page on light background) */
-    if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e)}
-  }finally{m.delete();g.delete();e.delete();k3.delete();k5.delete()}
-  return best&&orderPts(best);
-}
-function detectFull(src,minFrac=.15){
-  const sc=Math.min(1,800/Math.max(src.width,src.height)),s=$c(Math.round(src.width*sc),Math.round(src.height*sc)),x=s.getContext('2d');
-  x.imageSmoothingQuality='high';x.drawImage(src,0,0,s.width,s.height);
-  const r=detectCv(s,minFrac);return r&&r.map(p=>({x:p.x/sc,y:p.y/sc}));
-}
-
-/* ---------- perspective correction ---------- */
-/* true width/height of the rectangle from its perspective image (Zhang & He), centred pixel coordinates */
-function estAspect(tl,tr,br,bl,W0,H0){
-  const u=W0/2,v=H0/2,m1=[tl.x-u,tl.y-v,1],m2=[tr.x-u,tr.y-v,1],m3=[bl.x-u,bl.y-v,1],m4=[br.x-u,br.y-v,1];
-  const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dt=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-  const dn2=dt(cr(m2,m4),m3),dn3=dt(cr(m3,m4),m2);
-  if(Math.abs(dn2)<1e-6||Math.abs(dn3)<1e-6)return null;
-  const k2=dt(cr(m1,m4),m3)/dn2,k3=dt(cr(m1,m4),m2)/dn3;
-  const n2=[k2*m2[0]-m1[0],k2*m2[1]-m1[1],k2-1],n3=[k3*m3[0]-m1[0],k3*m3[1]-m1[1],k3-1];
-  if(Math.abs(n2[2])<1e-4||Math.abs(n3[2])<1e-4)return null;
-  const f2=-(n2[0]*n3[0]+n2[1]*n3[1])/(n2[2]*n3[2]);
-  if(!(f2>0)||!isFinite(f2))return null;
-  const a=((n2[0]**2+n2[1]**2)/f2+n2[2]**2),b=((n3[0]**2+n3[1]**2)/f2+n3[2]**2);
-  if(!(a>0&&b>0))return null;
-  const r=Math.sqrt(a/b);return isFinite(r)?r:null;
-}
-function warp(src,corners,aspect){
-  const [tl,tr,br,bl]=orderPts(corners),d=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
-  const isFull=[tl,tr,br,bl].every((p,i)=>Math.abs(p.x-(i===1||i===2?src.width:0))<1.5&&Math.abs(p.y-(i>=2?src.height:0))<1.5);
-  if(isFull&&!aspect)return src; // nothing to flatten: the exact original is reused
-  const wE=Math.max(d(tl,tr),d(bl,br)),hE=Math.max(d(tl,bl),d(tr,br)),simple=wE/Math.max(1,hE);
-  let ratio;
-  if(aspect)ratio=wE>=hE?aspect:1/aspect;
-  else{
-    ratio=estAspect(tl,tr,br,bl,src.width,src.height);
-    if(!ratio||ratio<.2||ratio>5||Math.max(ratio/simple,simple/ratio)>1.5)ratio=simple;
-  }
-  let W=Math.max(wE,hE*ratio),H=W/ratio;
-  const s=Math.min(1,MAXO/Math.max(W,H),Math.sqrt(MAXPX/(W*H)));
-  W=Math.max(10,Math.round(W*s));H=Math.max(10,Math.round(H*s));
-  const m=cv.imread(src),out=new cv.Mat();
-  const f=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
-  const t=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,W,0,W,H,0,H]);
-  const M=cv.getPerspectiveTransform(f,t);
-  try{
-    cv.warpPerspective(m,out,M,new cv.Size(W,H),cv.INTER_CUBIC,cv.BORDER_REPLICATE);
-    const c=$c(W,H);cv.imshow(c,out);return c;
-  }finally{[m,out,f,t,M].forEach(x=>x.delete())}
-}
-
-/* ---------- image analysis ---------- */
-function lumaStats(m){
-  const sc=Math.min(1,480/Math.max(m.cols,m.rows)),sm=new cv.Mat(),g=new cv.Mat();
-  try{
-    if(sc<1)cv.resize(m,sm,new cv.Size(Math.max(8,Math.round(m.cols*sc)),Math.max(8,Math.round(m.rows*sc))),0,0,cv.INTER_AREA);else m.copyTo(sm);
-    if(sm.channels()===1)sm.copyTo(g);else cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
-    const d=g.data,h=new Float64Array(256);for(let i=0;i<d.length;i++)h[d[i]]++;
-    const n=d.length,pc=f=>{const t=n*f;let a=0;for(let i=0;i<256;i++){a+=h[i];if(a>=t)return i}return 255};
-    return {p005:pc(.005),p05:pc(.05),p50:pc(.5),p90:pc(.9),p995:pc(.995)};
-  }finally{sm.delete();g.delete()}
-}
-/* noise sigma (Immerkaer, robust median version) measured on the full-resolution page */
-function estNoise(canvas){
-  const m=cv.imread(canvas),g=new cv.Mat(),o=new cv.Mat();let crop=null,k=null;
-  try{
-    cv.cvtColor(m,g,cv.COLOR_RGBA2GRAY);
-    const cw=Math.min(g.cols,640),ch=Math.min(g.rows,640);if(cw<8||ch<8)return 0;
-    crop=g.roi(new cv.Rect((g.cols-cw)>>1,(g.rows-ch)>>1,cw,ch));
-    k=cv.matFromArray(3,3,cv.CV_32F,[1,-2,1,-2,4,-2,1,-2,1]);
-    cv.filter2D(crop,o,cv.CV_16S,k);
-    const d=o.data16S,h=new Uint32Array(1100);let n=0;
-    for(let i=0;i<d.length;i++){const a=Math.abs(d[i]);h[a>1099?1099:a]++;n++}
-    let acc=0,med=0;for(let i=0;i<1100;i++){acc+=h[i];if(acc>=n/2){med=i;break}}
-    return clamp(med/(.6745*6),0,15);
-  }catch(e){return 0}finally{[m,g,o,crop,k].forEach(kill)}
-}
-
-/* ---------- image processing building blocks (all 8-bit, original resolution) ---------- */
-/* Edge-preserving denoise: chroma is smoothed, luma gets a light bilateral filter. Only used on noisy images. */
-function denoise(rgb,sigma){
-  const ycc=new cv.Mat(),pl=new cv.MatVector(),mg=new cv.MatVector(),out=new cv.Mat(),res=new cv.Mat(),Y2=new cv.Mat();
-  let Y=null,Cr=null,Cb=null;
-  try{
-    cv.cvtColor(rgb,ycc,cv.COLOR_RGB2YCrCb);cv.split(ycc,pl);
-    Y=pl.get(0);Cr=pl.get(1);Cb=pl.get(2);
-    const cs=clamp(1.2+sigma*.35,1.5,3.5);
-    cv.GaussianBlur(Cr,Cr,new cv.Size(0,0),cs);cv.GaussianBlur(Cb,Cb,new cv.Size(0,0),cs);
-    cv.bilateralFilter(Y,Y2,5,clamp(8+sigma*4,10,34),3);
-    mg.push_back(Y2);mg.push_back(Cr);mg.push_back(Cb);cv.merge(mg,out);
-    cv.cvtColor(out,res,cv.COLOR_YCrCb2RGB);
-    return res;
-  }catch(e){kill(res);throw e}
-  finally{[ycc,pl,mg,out,Y2,Y,Cr,Cb].forEach(kill)}
-}
-/* Uneven-light / shadow correction. The gain is limited to genuine shadows, so photos and dark blocks are NOT bleached. */
-function shade(rgb,strength,gLo,gHi){
-  const W=rgb.cols,H=rgb.rows,sc=Math.min(1,400/Math.max(W,H)),w=Math.max(8,Math.round(W*sc)),h=Math.max(8,Math.round(H*sc));
-  const sm=new cv.Mat(),g=new cv.Mat(),bg=new cv.Mat();let ker=null,GF=null,G=null,G3=null;
-  try{
-    cv.resize(rgb,sm,new cv.Size(w,h),0,0,cv.INTER_AREA);cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
-    const ks=Math.max(7,Math.round(Math.max(w,h)*.045)|1);
-    ker=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(ks,ks));
-    cv.morphologyEx(g,bg,cv.MORPH_CLOSE,ker);              // removes dark text, keeps the paper
-    cv.GaussianBlur(bg,bg,new cv.Size(0,0),Math.max(2,Math.max(w,h)*.02));
-    const d=bg.data,n=w*h,hs=new Float64Array(256);for(let i=0;i<n;i++)hs[d[i]]++;
-    let acc=0,P=255;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=n*.9){P=i;break}}
-    if(P<90)return;                                        // no bright paper in the picture: leave it alone
-    const out=new Uint8Array(n);
-    for(let i=0;i<n;i++){
-      const b=Math.max(d[i],1),wt=smooth(gLo*P,gHi*P,b);
-      const gain=Math.min(1.98,1+strength*wt*(Math.max(1,P/b)-1));
-      out[i]=Math.round(gain*128);
+              }finally{hull.delete()}
+            }finally{c.delete()}
+          }
+        }finally{cs.delete();h.delete()}};
+      const rectFallback=bin=>{const cs=new cv.MatVector(),h=new cv.Mat();
+        try{
+          cv.findContours(bin,cs,h,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+          let bi=-1,ba=area0*Math.max(.3,minFrac);
+          for(let i=0;i<cs.size();i++){const c=cs.get(i);const a=cv.contourArea(c);c.delete();if(a>ba&&a<area0*.99){ba=a;bi=i}}
+          if(bi>=0){const c=cs.get(bi);try{const r=cv.minAreaRect(c),pts=cv.RotatedRect.points(r);
+            best=pts.map(p=>({x:Math.round(clamp(p.x,0,m.cols-1)),y:Math.round(clamp(p.y,0,m.rows-1))}))}finally{c.delete()}}
+        }finally{cs.delete();h.delete()}};
+      try{
+        cv.cvtColor(m,g,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(g,g,new cv.Size(5,5),0);
+        const d=g.data,hs=new Uint32Array(256);for(let i=0;i<d.length;i+=7)hs[d[i]]++;
+        let tot=0;for(let i=0;i<256;i++)tot+=hs[i];let acc=0,med=128;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=tot/2){med=i;break}}
+        cv.Canny(g,e,Math.max(20,.66*med*.6),Math.min(255,Math.max(80,1.33*med*.8)));cv.dilate(e,e,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);
+        consider(e,deep?cv.RETR_LIST:cv.RETR_EXTERNAL);
+        if(!best){cv.threshold(g,e,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e,cv.RETR_EXTERNAL)}
+        if(!best&&deep){cv.threshold(g,e,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_OPEN,k3);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);consider(e,cv.RETR_EXTERNAL)}
+        if(!best&&deep){try{cv.threshold(g,e,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);cv.morphologyEx(e,e,cv.MORPH_CLOSE,k5);rectFallback(e)}catch(err){}}
+      }finally{g.delete();e.delete();k3.delete();k5.delete()}
+      return best&&orderPts(best);
     }
-    GF=cv.matFromArray(h,w,cv.CV_8UC1,out);
-    G=new cv.Mat();cv.resize(GF,G,new cv.Size(W,H),0,0,cv.INTER_LINEAR);
-    G3=new cv.Mat();cv.cvtColor(G,G3,cv.COLOR_GRAY2RGB);
-    cv.multiply(rgb,G3,rgb,1/128,-1);
-  }finally{[sm,g,bg,ker,GF,G,G3].forEach(kill)}
-}
-/* Unsharp mask with a noise threshold (soft), so grain is not amplified */
-function usm(m,amount,sigma,thr){
-  if(amount<=.03)return;
-  const bl=new cv.Mat(),pos=new cv.Mat(),neg=new cv.Mat();
-  try{
-    cv.GaussianBlur(m,bl,new cv.Size(0,0),sigma);
-    cv.subtract(m,bl,pos);cv.subtract(bl,m,neg);
-    if(thr>0){pos.convertTo(pos,-1,1,-thr);neg.convertTo(neg,-1,1,-thr)}
-    cv.addWeighted(m,1,pos,amount,0,m);
-    cv.addWeighted(m,1,neg,-amount,0,m);
-  }finally{[bl,pos,neg].forEach(kill)}
-}
-/* Tone curve: exposure -> levels -> gamma/brightness -> non-clipping contrast -> soft highlight shoulder */
-function buildLUT(t){
-  const lut=new Array(256),gex=Math.pow(2,t.ex/100*1.2),g=t.gamma*Math.pow(2,-t.br/100*.9),a=t.a0*Math.pow(2,t.ct/100),rng=Math.max(.05,(t.hi-t.lo)/255),lo=t.lo/255;
-  for(let i=0;i<256;i++){
-    let x=Math.max(0,(i/255*gex-lo)/rng),over=0;
-    if(x>1){over=x-1;x=1}
-    let y=Math.pow(x,g);
-    if(a!==1){const p=Math.pow(y,a),q=Math.pow(1-y,a);y=p+q>0?p/(p+q):y}
-    const o=t.loT+(t.hiT-t.loT)*y+(1-t.hiT)*(1-Math.exp(-over/.15));
-    lut[i]=clamp(Math.round(o*255),0,255);
-  }
-  return lut;
-}
-/* Filter presets (all mild; sh = base sharpening amount) */
-const PRE={
- color:{shade:0,a0:1.04,loT:0,hiT:.985,sh:.35},
- gray:{shade:.6,a0:1.06,loT:0,hiT:.975,sh:.45,gray:1},
- magic:{shade:1,a0:1.12,loT:.02,hiT:.965,sh:.5,doc:1},
- enhance:{shade:1,a0:1.2,loT:.02,hiT:.96,sh:.8,doc:1},
- bw:{shade:1,sh:.6,gray:1}};
 
-/* Main pipeline. Input: flattened page at full (or proxy) resolution. Output: processed canvas. */
-function enhance(flat,o,opt={}){
-  const f=o.filter,br=o.br||0,ct=o.ct||0,shp=o.sh||0,ex=o.ex||0,it=o.it==null?100:o.it;
-  if(f==='original'&&!br&&!ct&&!shp&&!ex)return flat;           // Original = untouched
-  const noise=opt.noise||0,Pm=PRE[f]||null,own=[];
-  const mk=()=>{const m=new cv.Mat();own.push(m);return m};
-  /* tone curve applied in plain JavaScript (cv.LUT is not available in the browser build of OpenCV.js) */
-  const lut8=(m,lut)=>{const d=m.data,L=new Uint8Array(lut),n=d.length;for(let i=0;i<n;i++)d[i]=L[d[i]];return m};
-  try{
-    const rgba=cv.imread(flat);own.push(rgba);
-    let cur=mk();cv.cvtColor(rgba,cur,cv.COLOR_RGBA2RGB);kill(rgba);
-    const longS=Math.max(cur.cols,cur.rows),orig=it<100?cur.clone():null;if(orig)own.push(orig);
-    if(Pm){
-      if(noise>=2.2){try{const n=denoise(cur,noise);own.push(n);kill(cur);cur=n}catch(e){}}   // optional step: skipped if unsupported
-      if(Pm.shade>0){try{shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6)}catch(e){}}   // optional step
-      if(Pm.gray){const g=mk();cv.cvtColor(cur,g,cv.COLOR_RGB2GRAY);kill(cur);cur=g}
+    /* ----- perspective ----- */
+    function estAspect(tl,tr,br,bl,W0,H0){
+      const u=W0/2,v=H0/2,m1=[tl.x-u,tl.y-v,1],m2=[tr.x-u,tr.y-v,1],m3=[bl.x-u,bl.y-v,1],m4=[br.x-u,br.y-v,1];
+      const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],dt=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+      const dn2=dt(cr(m2,m4),m3),dn3=dt(cr(m3,m4),m2);
+      if(Math.abs(dn2)<1e-6||Math.abs(dn3)<1e-6)return null;
+      const k2=dt(cr(m1,m4),m3)/dn2,k3=dt(cr(m1,m4),m2)/dn3;
+      const n2=[k2*m2[0]-m1[0],k2*m2[1]-m1[1],k2-1],n3=[k3*m3[0]-m1[0],k3*m3[1]-m1[1],k3-1];
+      if(Math.abs(n2[2])<1e-4||Math.abs(n3[2])<1e-4)return null;
+      const f2=-(n2[0]*n3[0]+n2[1]*n3[1])/(n2[2]*n3[2]);
+      if(!(f2>0)||!isFinite(f2))return null;
+      const a=((n2[0]**2+n2[1]**2)/f2+n2[2]**2),b=((n3[0]**2+n3[1]**2)/f2+n3[2]**2);
+      if(!(a>0&&b>0))return null;
+      const r=Math.sqrt(a/b);return isFinite(r)?r:null;
     }
-    const sig=clamp(longS/2600,.6,1.6),thr=clamp(Math.round(2+noise),2,12),nf=1/(1+Math.max(0,noise-1.5)/4);
-    if(f==='bw'){
-      const st=lumaStats(cur),P=Math.max(60,st.p90)/Math.pow(2,ex/100*1.2);
-      usm(cur,clamp(Pm.sh+shp/100*.9,0,1.8)*nf,sig,thr);
-      /* soft threshold relative to the paper level: thin, anti-aliased strokes keep their darkness */
-      const mid=.72-br/100*.18,wd=.34/Math.pow(2,ct/100),a=mid-wd/2,b=mid+wd/2,lut=new Array(256);
-      for(let i=0;i<256;i++)lut[i]=Math.round(255*smooth(a,b,i/P));
-      cur=lut8(cur,lut);
-    }else{
-      let t;
-      if(!Pm)t={lo:0,hi:255,loT:0,hiT:ex>0?.995:1,gamma:1,a0:1};
+    function warpMat(src,corners,aspect){
+      const [tl,tr,br,bl]=orderPts(corners),d=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+      const isFull=tl.x<1.5&&tl.y<1.5&&Math.abs(tr.x-src.cols)<1.5&&tr.y<1.5&&Math.abs(br.x-src.cols)<1.5&&Math.abs(br.y-src.rows)<1.5&&bl.x<1.5&&Math.abs(bl.y-src.rows)<1.5;
+      if(isFull&&!aspect)return {mat:src,own:false};
+      const wE=Math.max(d(tl,tr),d(bl,br)),hE=Math.max(d(tl,bl),d(tr,br)),simple=wE/Math.max(1,hE);
+      let ratio;
+      if(aspect)ratio=wE>=hE?aspect:1/aspect;
       else{
-        const st=lumaStats(cur),doc=!!Pm.doc;let lo,hi;
-        if(doc){hi=st.p50>=120?st.p90:st.p995;lo=Math.min(st.p005,100)}
-        else{lo=Math.min(st.p005*.9,100);hi=st.p995}
-        if(hi-lo<90)hi=Math.min(255,lo+90);
-        const m=clamp((st.p50-lo)/Math.max(1,hi-lo),.01,1.2);let gA=1;
-        if(!doc){
-          if(m<.32)gA=clamp(Math.log(.4)/Math.log(m),.6,1);          // dark photo: lift mid-tones
-          else if(st.p50>205&&st.p05>120)gA=1.25;                    // blown-out frame: pull mid-tones down
-        }
-        t={lo,hi,loT:Pm.loT,hiT:Pm.hiT,gamma:gA,a0:Pm.a0};
+        ratio=estAspect(tl,tr,br,bl,src.cols,src.rows);
+        if(!ratio||ratio<.2||ratio>5||Math.max(ratio/simple,simple/ratio)>1.5)ratio=simple;
       }
-      cur=lut8(cur,buildLUT({...t,ex,br,ct}));
-      usm(cur,Pm?clamp(Pm.sh+shp/100*.9,0,1.8)*nf:Math.max(0,shp/100*.9),sig,Pm?thr:2);
+      let W=Math.max(wE,hE*ratio),H=W/ratio;
+      const s=Math.min(1,MAXO/Math.max(W,H),Math.sqrt(MAXPX/(W*H)));
+      W=Math.max(10,Math.round(W*s));H=Math.max(10,Math.round(H*s));
+      const f=cv.matFromArray(4,1,cv.CV_32FC2,[tl.x,tl.y,tr.x,tr.y,br.x,br.y,bl.x,bl.y]);
+      const t=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,W,0,W,H,0,H]);
+      const M=cv.getPerspectiveTransform(f,t),out=new cv.Mat();
+      try{
+        cv.warpPerspective(src,out,M,new cv.Size(W,H),cv.INTER_CUBIC,cv.BORDER_REPLICATE);
+        return {mat:out,own:true};
+      }catch(e){kill(out);throw e}
+      finally{kill(f);kill(t);kill(M)}
     }
-    if(orig){                                                      // filter intensity: blend with the original
-      let c3=cur;if(cur.channels()===1){c3=mk();cv.cvtColor(cur,c3,cv.COLOR_GRAY2RGB)}
-      const k=it/100,mx=mk();cv.addWeighted(orig,1-k,c3,k,0,mx);cur=mx;
+
+    /* ----- analysis ----- */
+    function lumaStats(m){
+      const sc=Math.min(1,480/Math.max(m.cols,m.rows)),sm=new cv.Mat(),g=new cv.Mat();
+      try{
+        if(sc<1)cv.resize(m,sm,new cv.Size(Math.max(8,Math.round(m.cols*sc)),Math.max(8,Math.round(m.rows*sc))),0,0,cv.INTER_AREA);else m.copyTo(sm);
+        if(sm.channels()===1)sm.copyTo(g);else cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
+        const d=g.data,h=new Float64Array(256);for(let i=0;i<d.length;i++)h[d[i]]++;
+        const n=d.length,pc=f=>{const t=n*f;let a=0;for(let i=0;i<256;i++){a+=h[i];if(a>=t)return i}return 255};
+        return {p005:pc(.005),p05:pc(.05),p50:pc(.5),p90:pc(.9),p995:pc(.995)};
+      }finally{sm.delete();g.delete()}
     }
-    const c=$c(cur.cols,cur.rows);cv.imshow(c,cur);return c;
-  }finally{own.forEach(kill)}
+    function estNoise(flat){
+      const g=new cv.Mat(),o=new cv.Mat();let crop=null,k=null;
+      try{
+        cv.cvtColor(flat,g,cv.COLOR_RGBA2GRAY);
+        const cw=Math.min(g.cols,640),ch=Math.min(g.rows,640);if(cw<8||ch<8)return 0;
+        crop=g.roi(new cv.Rect((g.cols-cw)>>1,(g.rows-ch)>>1,cw,ch));
+        k=cv.matFromArray(3,3,cv.CV_32F,[1,-2,1,-2,4,-2,1,-2,1]);
+        cv.filter2D(crop,o,cv.CV_16S,k);
+        const d=o.data16S,h=new Uint32Array(1100);let n=0;
+        for(let i=0;i<d.length;i++){const a=Math.abs(d[i]);h[a>1099?1099:a]++;n++}
+        let acc=0,med=0;for(let i=0;i<1100;i++){acc+=h[i];if(acc>=n/2){med=i;break}}
+        return clamp(med/(.6745*6),0,15);
+      }catch(e){return 0}finally{[g,o,crop,k].forEach(kill)}
+    }
+
+    /* ----- processing blocks ----- */
+    function denoise(rgb,sigma){   // chroma-only smoothing (fast, keeps text sharp)
+      const ycc=new cv.Mat(),pl=new cv.MatVector(),mg=new cv.MatVector(),out=new cv.Mat(),res=new cv.Mat();
+      let Y=null,Cr=null,Cb=null;
+      try{
+        cv.cvtColor(rgb,ycc,cv.COLOR_RGB2YCrCb);cv.split(ycc,pl);
+        Y=pl.get(0);Cr=pl.get(1);Cb=pl.get(2);
+        const cs=clamp(1.2+sigma*.35,1.5,3.5);
+        cv.GaussianBlur(Cr,Cr,new cv.Size(0,0),cs);cv.GaussianBlur(Cb,Cb,new cv.Size(0,0),cs);
+        mg.push_back(Y);mg.push_back(Cr);mg.push_back(Cb);cv.merge(mg,out);
+        cv.cvtColor(out,res,cv.COLOR_YCrCb2RGB);
+        return res;
+      }catch(e){kill(res);throw e}
+      finally{[ycc,pl,mg,out,Y,Cr,Cb].forEach(kill)}
+    }
+    function shade(rgb,strength,gLo,gHi){   // uneven light / shadows; gain only where it is really shadow
+      const W=rgb.cols,H=rgb.rows,sc=Math.min(1,400/Math.max(W,H)),w=Math.max(8,Math.round(W*sc)),h=Math.max(8,Math.round(H*sc));
+      const sm=new cv.Mat(),g=new cv.Mat(),bg=new cv.Mat();let ker=null,GF=null,G=null,G3=null;
+      try{
+        cv.resize(rgb,sm,new cv.Size(w,h),0,0,cv.INTER_AREA);cv.cvtColor(sm,g,cv.COLOR_RGB2GRAY);
+        const ks=Math.max(7,Math.round(Math.max(w,h)*.045)|1);
+        ker=cv.getStructuringElement(cv.MORPH_ELLIPSE,new cv.Size(ks,ks));
+        cv.morphologyEx(g,bg,cv.MORPH_CLOSE,ker);
+        cv.GaussianBlur(bg,bg,new cv.Size(0,0),Math.max(2,Math.max(w,h)*.02));
+        const d=bg.data,n=w*h,hs=new Float64Array(256);for(let i=0;i<n;i++)hs[d[i]]++;
+        let acc=0,P=255;for(let i=0;i<256;i++){acc+=hs[i];if(acc>=n*.9){P=i;break}}
+        if(P<90)return;
+        const out=new Uint8Array(n);
+        for(let i=0;i<n;i++){
+          const b=Math.max(d[i],1),wt=smooth(gLo*P,gHi*P,b);
+          const gain=Math.min(1.98,1+strength*wt*(Math.max(1,P/b)-1));
+          out[i]=Math.round(gain*128);
+        }
+        GF=cv.matFromArray(h,w,cv.CV_8UC1,out);
+        G=new cv.Mat();cv.resize(GF,G,new cv.Size(W,H),0,0,cv.INTER_LINEAR);
+        G3=new cv.Mat();cv.cvtColor(G,G3,cv.COLOR_GRAY2RGB);
+        cv.multiply(rgb,G3,rgb,1/128,-1);
+      }finally{[sm,g,bg,ker,GF,G,G3].forEach(kill)}
+    }
+    function usm(m,amount,sigma){
+      if(amount<=.03)return;
+      const bl=new cv.Mat();
+      try{cv.GaussianBlur(m,bl,new cv.Size(0,0),sigma);cv.addWeighted(m,1+amount,bl,-amount,0,m)}
+      finally{kill(bl)}
+    }
+    function buildLUT(t){
+      const lut=new Array(256),gex=Math.pow(2,t.ex/100*1.2),g=t.gamma*Math.pow(2,-t.br/100*.9),a=t.a0*Math.pow(2,t.ct/100),rng=Math.max(.05,(t.hi-t.lo)/255),lo=t.lo/255;
+      for(let i=0;i<256;i++){
+        let x=Math.max(0,(i/255*gex-lo)/rng),over=0;
+        if(x>1){over=x-1;x=1}
+        let y=Math.pow(x,g);
+        if(a!==1){const p=Math.pow(y,a),q=Math.pow(1-y,a);y=p+q>0?p/(p+q):y}
+        const o=t.loT+(t.hiT-t.loT)*y+(1-t.hiT)*(1-Math.exp(-over/.15));
+        lut[i]=clamp(Math.round(o*255),0,255);
+      }
+      return lut;
+    }
+    const PRE={
+     color:{shade:0,a0:1.04,loT:0,hiT:.985,sh:.35},
+     gray:{shade:.6,a0:1.06,loT:0,hiT:.975,sh:.45,gray:1},
+     magic:{shade:1,a0:1.12,loT:.02,hiT:.965,sh:.5,doc:1},
+     enhance:{shade:1,a0:1.2,loT:.02,hiT:.96,sh:.8,doc:1},
+     bw:{shade:1,sh:.6,gray:1}};
+
+    /* returns {mat: RGBA, own: bool}. Original with no adjustments returns the input untouched. */
+    function enhance(src,o,noise){
+      const f=o.filter,br=o.br||0,ct=o.ct||0,shp=o.sh||0,ex=o.ex||0,it=o.it==null?100:o.it;
+      if(f==='original'&&!br&&!ct&&!shp&&!ex)return {mat:src,own:false};
+      const Pm=PRE[f]||null,own=[];
+      const mk=()=>{const x=new cv.Mat();own.push(x);return x};
+      const lut8=(m,lut)=>{const d=m.data,L=new Uint8Array(lut),n=d.length;for(let i=0;i<n;i++)d[i]=L[d[i]];return m};
+      try{
+        let cur=mk();cv.cvtColor(src,cur,cv.COLOR_RGBA2RGB);
+        const longS=Math.max(cur.cols,cur.rows);
+        let orig=null;if(it<100){orig=cur.clone();own.push(orig)}
+        if(Pm){
+          if(noise>=3){try{const n=denoise(cur,noise);own.push(n);const old=cur;cur=n;kill(old)}catch(e){}}
+          if(Pm.shade>0){try{shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6)}catch(e){}}
+          if(Pm.gray){const g=mk();cv.cvtColor(cur,g,cv.COLOR_RGB2GRAY);const old=cur;cur=g;kill(old)}
+        }
+        const sig=clamp(longS/2600,.6,1.4),nf=1/(1+Math.max(0,noise-1.5)/4);
+        if(f==='bw'){
+          const st=lumaStats(cur),P=Math.max(60,st.p90)/Math.pow(2,ex/100*1.2);
+          usm(cur,clamp(Pm.sh+shp/100*.9,0,1.8)*nf,sig);
+          const mid=.72-br/100*.18,wd=.34/Math.pow(2,ct/100),a=mid-wd/2,b=mid+wd/2,lut=new Array(256);
+          for(let i=0;i<256;i++)lut[i]=Math.round(255*smooth(a,b,i/P));
+          lut8(cur,lut);
+        }else{
+          let t;
+          if(!Pm)t={lo:0,hi:255,loT:0,hiT:ex>0?.995:1,gamma:1,a0:1};
+          else{
+            const st=lumaStats(cur),doc=!!Pm.doc;let lo,hi;
+            if(doc){hi=st.p50>=120?st.p90:st.p995;lo=Math.min(st.p005,100)}
+            else{lo=Math.min(st.p005*.9,100);hi=st.p995}
+            if(hi-lo<90)hi=Math.min(255,lo+90);
+            const m=clamp((st.p50-lo)/Math.max(1,hi-lo),.01,1.2);let gA=1;
+            if(!doc){
+              if(m<.32)gA=clamp(Math.log(.4)/Math.log(m),.6,1);
+              else if(st.p50>205&&st.p05>120)gA=1.25;
+            }
+            t={lo,hi,loT:Pm.loT,hiT:Pm.hiT,gamma:gA,a0:Pm.a0};
+          }
+          lut8(cur,buildLUT(Object.assign({},t,{ex,br,ct})));
+          usm(cur,Pm?clamp(Pm.sh+shp/100*.9,0,1.8)*nf:Math.max(0,shp/100*.9),sig);
+        }
+        if(orig){
+          let c3=cur;if(cur.channels()===1){c3=mk();cv.cvtColor(cur,c3,cv.COLOR_GRAY2RGB)}
+          const k=it/100,mx=mk();cv.addWeighted(orig,1-k,c3,k,0,mx);cur=mx;
+        }
+        const out=new cv.Mat();
+        cv.cvtColor(cur,out,cur.channels()===1?cv.COLOR_GRAY2RGBA:cv.COLOR_RGB2RGBA);
+        return {mat:out,own:true};
+      }finally{own.forEach(kill)}
+    }
+
+    /* ----- state: one source page + its flattened version are kept here ----- */
+    const ST={key:null,src:null,flatKey:null,flat:null,flatOwn:false,noise:undefined};
+    const freeFlat=()=>{if(ST.flat&&ST.flatOwn)kill(ST.flat);ST.flat=null;ST.flatKey=null;ST.noise=undefined};
+    const freeSrc=()=>{freeFlat();kill(ST.src);ST.src=null;ST.key=null};
+
+    function doRender(m){
+      if(m.buf){freeSrc();ST.src=mkRGBA(m.buf,m.w,m.h);ST.key=m.key}
+      if(!ST.src||ST.key!==m.key){postMessage({id:m.id,need:true});return}
+      const fk=JSON.stringify(m.corners)+'|'+(m.aspect||0);
+      if(ST.flatKey!==fk||!ST.flat){freeFlat();const r=warpMat(ST.src,m.corners,m.aspect);ST.flat=r.mat;ST.flatOwn=r.own;ST.flatKey=fk}
+      const flat=ST.flat;let work=flat,ownW=null;
+      const mx=m.maxOut||0;
+      if(mx&&Math.max(flat.cols,flat.rows)>mx){
+        const s=mx/Math.max(flat.cols,flat.rows),w=new cv.Mat();
+        cv.resize(flat,w,new cv.Size(Math.max(1,Math.round(flat.cols*s)),Math.max(1,Math.round(flat.rows*s))),0,0,cv.INTER_AREA);
+        work=w;ownW=w;
+      }
+      let res=null;
+      try{
+        let noise=0;
+        if(m.filter!=='original'){if(ST.noise===undefined)ST.noise=estNoise(flat);noise=ST.noise}
+        res=enhance(work,m,noise);
+        post(m.id,res.mat,{noise});
+      }finally{if(res&&res.own)kill(res.mat);kill(ownW)}
+    }
+    function doDetect(m){
+      const mat=mkRGBA(m.buf,m.w,m.h);
+      try{const pts=detectQuad(mat,m.minFrac||.15,!!m.deep);postMessage({id:m.id,pts:pts||null})}
+      finally{kill(mat)}
+    }
+
+    self.onmessage=e=>{
+      const m=e.data;
+      try{
+        if(m.op==='render')doRender(m);
+        else if(m.op==='detect')doDetect(m);
+        else if(m.op==='free'){freeSrc();postMessage({id:m.id,ok:true})}
+      }catch(err){
+        let msg='';
+        try{if(typeof err==='number'&&cv.exceptionFromPtr)msg=cv.exceptionFromPtr(err).msg}catch(x){}
+        if(!msg)msg=typeof err==='number'?'OpenCV error '+err:(err&&err.message)||String(err);
+        postMessage({id:m.id,error:msg});
+      }
+    };
+    postMessage({op:'ready'});
+  }
 }
 
-/* ---------- per-page cache: flattened page + small proxy (for live preview) + noise estimate ---------- */
-let FC=null;
-function getFlat(p){
-  const k=p.id+'|'+(p.sv||0)+'|'+p.corners.map(q=>Math.round(q.x*10)+','+Math.round(q.y*10)).join(';')+'|'+(p.aspect||0)+'|'+p.src.width+'x'+p.src.height;
-  if(FC&&FC.key===k)return FC;
-  FC={key:k,flat:warp(p.src,p.corners,p.aspect),px:{},noise:undefined};
-  return FC;
+/* ---------- main-thread side of the worker ---------- */
+const CVW={w:null,p:null,pend:{},n:1};
+function cvFailAll(msg){const p=CVW.pend;CVW.pend={};Object.keys(p).forEach(k=>p[k].rej(new Error(msg)))}
+function cvStart(){
+  if(CVW.p)return CVW.p;
+  const prom=new Promise((res,rej)=>{
+    let w;
+    try{w=new Worker(URL.createObjectURL(new Blob(['('+workerMain.toString()+')()'],{type:'text/javascript'})))}
+    catch(e){CVW.p=null;rej(new Error('Web Worker not supported: '+e.message));return}
+    CVW.w=w;
+    const fail=msg=>{clearTimeout(to);try{w.terminate()}catch(e){}if(CVW.w===w){CVW.w=null;CVW.p=null}cvFailAll(msg);rej(new Error(msg))};
+    const to=setTimeout(()=>fail('OpenCV engine took too long to load. Check your internet connection.'),180000);
+    w.onmessage=e=>{
+      const m=e.data;
+      if(m.op==='ready'){clearTimeout(to);res();return}
+      if(m.op==='fail'){fail(m.msg);return}
+      const q=CVW.pend[m.id];
+      if(q){delete CVW.pend[m.id];m.error?q.rej(new Error(m.error)):q.res(m)}
+    };
+    w.onerror=e=>{fail('Engine error: '+(e&&e.message||'worker crashed'))};
+  });
+  CVW.p=prom;
+  return prom;
 }
-function getProxy(fe,max=1000){
-  const key='p'+max;if(fe.px[key])return fe.px[key];
-  const f=fe.flat,s=Math.min(1,max/Math.max(f.width,f.height));
-  if(s>=1)return fe.px[key]=f;
-  const c=$c(Math.max(1,Math.round(f.width*s)),Math.max(1,Math.round(f.height*s))),x=c.getContext('2d');
-  x.imageSmoothingQuality='high';x.drawImage(f,0,0,c.width,c.height);return fe.px[key]=c;
+const cvReady=cvStart;
+async function cvCall(msg,transfer){
+  await cvStart();
+  return new Promise((res,rej)=>{const id=CVW.n++;CVW.pend[id]={res,rej};
+    try{CVW.w.postMessage(Object.assign({},msg,{id}),transfer||[])}catch(e){delete CVW.pend[id];rej(e)}});
 }
-function getNoise(fe){if(fe.noise===undefined){try{fe.noise=estNoise(fe.flat)}catch(e){fe.noise=0}}return fe.noise}
-
+function rgbaToCanvas(r){const c=$c(r.w,r.h);c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(r.buf),r.w,r.h),0,0);return c}
+/* render one page (flatten + filter) in the worker. maxOut>0 = small, fast preview */
+async function cvRender(p,o,maxOut=0){
+  const key=p.id+':'+(p.sv||0);
+  const msg={op:'render',key,corners:p.corners,aspect:p.aspect||0,filter:o.filter,br:o.br||0,ct:o.ct||0,sh:o.sh||0,ex:o.ex||0,it:o.it==null?100:o.it,maxOut};
+  let r=await cvCall(msg);
+  if(r.need){
+    const g=p.src.getContext('2d').getImageData(0,0,p.src.width,p.src.height);
+    r=await cvCall(Object.assign({},msg,{buf:g.data.buffer,w:g.width,h:g.height}),[g.data.buffer]);
+  }
+  return rgbaToCanvas(r);
+}
+async function cvDetect(canvas,minFrac=.15,maxDim=800,deep=true){
+  const s=Math.min(1,maxDim/Math.max(canvas.width,canvas.height));
+  let cv2=canvas,w=canvas.width,h=canvas.height;
+  if(s<1){w=Math.max(8,Math.round(canvas.width*s));h=Math.max(8,Math.round(canvas.height*s));cv2=$c(w,h);const x=cv2.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(canvas,0,0,w,h)}
+  const d=cv2.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h);
+  const r=await cvCall({op:'detect',minFrac,deep,buf:d.data.buffer,w,h},[d.data.buffer]);
+  const kx=canvas.width/w,ky=canvas.height/h;
+  return r.pts&&r.pts.map(p=>({x:p.x*kx,y:p.y*ky}));
+}
+const isPlain=p=>p.filter==='original'&&!p.br&&!p.ct&&!p.sh&&!p.ex&&!p.aspect&&exactQ(p.corners,p.src.width,p.src.height);
 async function renderPage(p){
-  await cvReady();
-  const fe=getFlat(p);
-  const result=enhance(fe.flat,p,{noise:p.filter==='original'?0:getNoise(fe)});
+  const result=isPlain(p)?p.src:await cvRender(p,p,0);
   const t=$c(320,Math.max(1,Math.round(320*result.height/result.width))),x=t.getContext('2d');
   x.imageSmoothingQuality='high';x.drawImage(result,0,0,t.width,t.height);
-  return {...p,result,thumb:t.toDataURL('image/jpeg',.8),v:(p.v||0)+1};
+  return Object.assign({},p,{result,thumb:t.toDataURL('image/jpeg',.8),v:(p.v||0)+1});
 }
 function rotCanvas(src){const c=$c(src.height,src.width),x=c.getContext('2d');x.translate(c.width/2,c.height/2);x.rotate(Math.PI/2);x.drawImage(src,-src.width/2,-src.height/2);return c}
 const rotPts=(pts,H)=>pts.map(p=>({x:H-p.y,y:p.x}));
@@ -410,7 +499,7 @@ const MODES=[
  {k:'photo',n:'Photo',f:'original',detect:false}];
 const FILTERS=[['original','Original'],['color','Color'],['gray','Grayscale'],['bw','Black & White'],['magic','Magic Color'],['enhance','Doc Enhance']];
 
-/* ---------- PDF creation (full resolution, no extra downscaling unless Compress is ticked) ---------- */
+/* ---------- PDF creation (no extra downscaling unless Compress is ticked) ---------- */
 const SIZES={A4:[595.28,841.89],A3:[841.89,1190.55],Letter:[612,792]};
 async function buildPdf(canvases,o,progress,hq){
   await need('pdflib');
@@ -422,10 +511,10 @@ async function buildPdf(canvases,o,progress,hq){
     const q=Math.min(100,Math.max(o.q,hq&&hq[i]?95:0));
     const img=await doc.embedJpg(new Uint8Array(await (await toBlob(c,'image/jpeg',q/100)).arrayBuffer()));
     let W,H;
-    if(o.size==='Original'){const k=o.k||.24;W=w0*k;H=h0*k}            // 0.24 = 300 dpi
+    if(o.size==='Original'){const k=o.k||.24;W=w0*k;H=h0*k}
     else{[W,H]=SIZES[o.size];if(o.orient==='landscape'||(o.orient==='auto'&&w0>h0))[W,H]=[H,W]}
     const m=o.size==='Original'?0:o.margin*2.835,k=Math.min((W-2*m)/img.width,(H-2*m)/img.height),w=img.width*k,h=img.height*k;
-    doc.addPage([W,H]).drawImage(img,{x:(W-w)/2,y:(H-h)/2,width:w,height:h});   // aspect ratio preserved
+    doc.addPage([W,H]).drawImage(img,{x:(W-w)/2,y:(H-h)/2,width:w,height:h});
   }
   if(o.pw){
     if(typeof doc.encrypt!=='function')throw new Error('Password protection is not supported by the loaded PDF library.');
@@ -480,8 +569,8 @@ const Bar=({title,onBack,right})=><div className="sticky top-0 z-10 flex items-c
 const Btn=({red,className='',...p})=><button {...p} className={'inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:scale-95 disabled:pointer-events-none disabled:opacity-40 '+(red?'bg-gradient-to-br from-[#ff4b3a] to-[#d90b00] text-white shadow-lg shadow-red-500/30 ':'border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 ')+className}/>;
 const ImportBtn=({onFiles,className,children})=><label className={'cursor-pointer transition active:scale-95 '+className}>{children}<input type="file" hidden multiple accept="image/*,application/pdf" onChange={e=>{onFiles([...e.target.files]);e.target.value=''}}/></label>;
 /* shows a canvas, down-scaled for display only (the real data is never touched) */
-function drawFit(c,src,max=1600){const s=Math.min(1,max/Math.max(src.width,src.height));c.width=Math.max(1,Math.round(src.width*s));c.height=Math.max(1,Math.round(src.height*s));const g=c.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(src,0,0,c.width,c.height)}
-function CanvasView({canvas}){const r=useRef();useEffect(()=>{if(r.current)drawFit(r.current,canvas)},[canvas]);
+function drawFit(c,src,max=1400){const s=Math.min(1,max/Math.max(src.width,src.height));c.width=Math.max(1,Math.round(src.width*s));c.height=Math.max(1,Math.round(src.height*s));const g=c.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(src,0,0,c.width,c.height)}
+function CanvasView({canvas}){const r=useRef();useEffect(()=>{if(r.current&&canvas)drawFit(r.current,canvas)},[canvas]);
   return <canvas ref={r} className="mx-auto max-h-[62vh] max-w-full rounded-xl bg-white shadow-md ring-1 ring-slate-200"/>}
 /* Original vs Enhanced: drag the slider to wipe between the two */
 function Wipe({before,after}){
@@ -548,8 +637,8 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
   const vref=useRef(),oref=useRef(),mrow=useRef(),smc=useRef(null),st=useRef({stream:null,caps:{},pts:null,still:0,armed:true,cool:0,torch:false,hint:'',hold:false,n:0,ic:null,photoCaps:undefined,noPhoto:false});
   const [err,setErr]=useState(''),[facing,setFacing]=useState('environment'),[flash,setFlash]=useState('auto'),[auto,setAuto]=useState(true),[live,setLive]=useState(false);
   const [ready,setReady]=useState(false),[cvOk,setCvOk]=useState(false),[caps,setCaps]=useState({}),[ev,setEv]=useState(0),[zoom,setZoom]=useState(1);
-  const [ring,setRing]=useState(null),[snap,setSnap]=useState(false),[retry,setRetry]=useState(0),[hint,setHint]=useState('');
-  const cb=useRef({});cb.current={onCapture,mode,flash,auto,live};
+  const [ring,setRing]=useState(null),[snap,setSnap]=useState(false),[retry,setRetry]=useState(0),[hint,setHint]=useState(''),[hq,setHq]=useState(true),[proc,setProc]=useState(false);
+  const cb=useRef({});cb.current={onCapture,mode,flash,auto,live,hq};
   const shootRef=useRef();
   const md0=MODES.find(q=>q.k===mode);
   const initCv=()=>cvReady().then(()=>setCvOk(true)).catch(e=>setErr(e.message));
@@ -559,7 +648,7 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
     setReady(false);setErr('');
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){setErr('Camera is not available here. Open this page over HTTPS (or localhost) in a modern browser. You can still import from the gallery.');return}
     try{
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:2560},height:{ideal:1440},frameRate:{ideal:30}},audio:false});
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}},audio:false});
       if(dead){s.getTracks().forEach(t=>t.stop());return}
       st.current.stream=s;st.current.torch=false;st.current.pts=null;st.current.still=0;st.current.ic=null;st.current.photoCaps=undefined;
       const v=vref.current;v.srcObject=s;await v.play();
@@ -578,19 +667,19 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
 
   useEffect(()=>{const el=mrow.current&&mrow.current.querySelector('[data-on="1"]');el&&el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'})},[mode]);
 
-  /* grab the sharpest frame available: full-resolution still if the browser supports it, else the video frame */
+  /* HD: sensor still (capped at 4000 px). FAST (or if the browser can't): the live video frame. */
   const grab=async()=>{
     const S=st.current,v=vref.current,tr=S.stream&&S.stream.getVideoTracks()[0];
-    if(tr&&window.ImageCapture&&!S.noPhoto){
+    if(cb.current.hq&&tr&&window.ImageCapture&&!S.noPhoto){
       try{
         if(!S.ic)S.ic=new ImageCapture(tr);
         if(S.photoCaps===undefined){try{S.photoCaps=await S.ic.getPhotoCapabilities()}catch{S.photoCaps=null}}
         const pc=S.photoCaps,opt={};
-        if(pc&&pc.imageWidth&&pc.imageHeight){opt.imageWidth=pc.imageWidth.max;opt.imageHeight=pc.imageHeight.max}
+        if(pc&&pc.imageWidth&&pc.imageHeight){const mw=pc.imageWidth.max,mh=pc.imageHeight.max,w=Math.min(mw,4000);opt.imageWidth=w;opt.imageHeight=Math.round(mh*w/mw)}
         if(pc&&Array.isArray(pc.fillLightMode)&&pc.fillLightMode.includes('off'))opt.fillLightMode='off';
-        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),4500))]);
+        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),3500))]);
         let c=await fileToCanvas(blob,MAXO);
-        if(v.videoWidth<v.videoHeight&&c.width>c.height)c=rotCanvas(c);   // safety net when EXIF orientation is missing
+        if(v.videoWidth<v.videoHeight&&c.width>c.height)c=rotCanvas(c);
         return c;
       }catch(e){S.noPhoto=true}
     }
@@ -599,37 +688,40 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
   const shoot=async()=>{
     const S=st.current,v=vref.current;
     if(S.hold||!v||!v.videoWidth)return;
-    S.hold=true;
+    S.hold=true;setProc(true);
     try{
       navigator.vibrate&&navigator.vibrate(25);setSnap(true);setTimeout(()=>setSnap(false),120);
       const c=await grab();
       const md=MODES.find(q=>q.k===cb.current.mode);let corners=null;
-      if(md.detect){try{await cvReady();corners=detectFull(c,.1)}catch{}}
+      if(md.detect){try{corners=await cvDetect(c,.1,800,true)}catch(e){}}
       await cb.current.onCapture(c,corners||exactFrame(c));
     }catch(e){setErr('Capture failed: '+e.message)}
-    finally{S.hold=false;S.still=0}
+    finally{S.hold=false;S.still=0;S.cool=Date.now()+1200;setProc(false)}
   };
   shootRef.current=shoot;
 
-  /* live edge detection (small canvas, self-scheduling loop, no overlap) */
+  /* live edge detection: runs in the worker, so the camera never stutters */
   useEffect(()=>{if(!ready||!cvOk)return;const S=st.current;let alive=true,timer=0;
     const setH=t=>{if(S.hint!==t){S.hint=t;setHint(t)}};
-    const step=()=>{
+    const step=async()=>{
       const v=vref.current,o=oref.current;
       if(!v||!o||!v.videoWidth||S.hold||document.hidden)return;
       const w=320,hh=Math.round(v.videoHeight*w/v.videoWidth),c=smc.current||(smc.current=$c(w,hh));
       if(c.width!==w||c.height!==hh){c.width=w;c.height=hh}
       const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0,w,hh);
-      const {mode:M,flash:F,auto:A,live:L}=cb.current;
+      const cur0=cb.current,M=cur0.mode,F=cur0.flash;
       if(F==='auto'&&(S.n++%8===0)){
         const d=x.getImageData(0,0,w,hh).data;let s=0,n=0;for(let i=0;i<d.length;i+=64){s+=d[i]*.3+d[i+1]*.6+d[i+2]*.1;n++}
         const lum=s/n;if(!S.torch&&lum<45)setTorch(true);else if(S.torch&&lum>150)setTorch(false);
       }
       const md=MODES.find(q=>q.k===M);
       if(o.width!==w||o.height!==hh){o.width=w;o.height=hh}
-      const g=o.getContext('2d');g.clearRect(0,0,w,hh);
-      if(!(md.detect&&(L||!A))){S.pts=null;S.still=0;S.armed=true;setH('');return}
-      let pts=null;try{pts=detectCv(c,.12)}catch{}
+      const g=o.getContext('2d');
+      if(!(md.detect&&(cur0.live||!cur0.auto))){g.clearRect(0,0,w,hh);S.pts=null;S.still=0;S.armed=true;setH('');return}
+      let pts=null;try{pts=await cvDetect(c,.12,320,false)}catch(e){}
+      if(!alive||S.hold)return;
+      const A=cb.current.auto,L=cb.current.live;
+      g.clearRect(0,0,w,hh);
       if(pts){
         const mv=S.pts?Math.max(...pts.map((p,i)=>Math.hypot(p.x-S.pts[i].x,p.y-S.pts[i].y)))/w:1;
         S.still=mv<.025?S.still+1:0;if(mv>.08)S.armed=true;S.pts=pts;
@@ -642,8 +734,8 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
         if(A&&L&&S.armed&&S.still>=4&&Date.now()>S.cool){S.armed=false;S.cool=Date.now()+2500;shootRef.current()}
       }else{S.pts=null;S.still=0;S.armed=true;setH('Looking for the page…')}
     };
-    const loop=()=>{if(!alive)return;try{step()}catch(e){}timer=setTimeout(loop,170)};
-    loop();
+    const tick=async()=>{if(!alive)return;try{await step()}catch(e){}if(alive)timer=setTimeout(tick,120)};
+    tick();
     return()=>{alive=false;clearTimeout(timer)}},[ready,cvOk]);
 
   const focus=async e=>{
@@ -664,6 +756,7 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
     <div className="flex h-14 shrink-0 items-center justify-between bg-black px-3 pt-[env(safe-area-inset-top)]">
       <button onClick={onHome} className={side} title="Home"><Icon n="home" c="h-7 w-7"/></button>
       <button onClick={()=>setFacing(f=>f==='environment'?'user':'environment')} className={side} title="Switch camera"><Icon n="flip" c="h-6 w-6"/></button>
+      <button onClick={()=>setHq(h=>!h)} className={'rounded-full px-3 py-1 text-xs font-bold transition active:scale-90 '+(hq?'bg-[#4aa3ff] text-black':'bg-white/15 text-white')} title="HD = sharper photo, FAST = quicker capture">{hq?'HD':'FAST'}</button>
       <div className={'grid h-8 w-12 place-items-center rounded-full '+(ready?'bg-green-500 text-white':err?'bg-red-500':'animate-pulse bg-yellow-400 text-black')} title={ready?'Camera on':err?'Camera off':'Starting camera'}><Icon n="camera" c="h-5 w-5"/></div>
     </div>
     <div className="relative flex-1 overflow-hidden bg-black" onClick={tap}>
@@ -672,7 +765,8 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
       {ready&&searching&&<div className="pointer-events-none absolute inset-6"><span className="corner left-0 top-0 rounded-tl-2xl border-l-4 border-t-4"/><span className="corner right-0 top-0 rounded-tr-2xl border-r-4 border-t-4"/><span className="corner bottom-0 left-0 rounded-bl-2xl border-b-4 border-l-4"/><span className="corner bottom-0 right-0 rounded-br-2xl border-b-4 border-r-4"/><div className="scanline"/></div>}
       {ready&&auto&&!live&&md0.detect&&<div className="pointer-events-none absolute inset-x-4 top-1/2 -translate-y-1/2 rounded-lg bg-black/60 px-6 py-7 text-center text-[17px] leading-snug text-white/90">{md0.tip}</div>}
       {ready&&!cvOk&&<div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/60 px-4 py-1.5 text-sm">Loading scanner engine…</div>}
-      {hint&&ready&&cvOk&&<div className={'pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium '+(good?'bg-green-500/90 text-black':'bg-black/60')}>{hint}</div>}
+      {proc&&<div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full bg-[#eb1000]/90 px-4 py-1.5 text-sm font-medium">Processing…</div>}
+      {!proc&&hint&&ready&&cvOk&&<div className={'pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium '+(good?'bg-green-500/90 text-black':'bg-black/60')}>{hint}</div>}
       {ring&&<div className="pointer-events-none absolute h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-yellow-300" style={{left:ring.x,top:ring.y}}/>}
       {snap&&<div className="pointer-events-none absolute inset-0 bg-white/80"/>}
       {hasCtl&&<div onClick={e=>e.stopPropagation()} className="absolute bottom-3 left-1/2 w-60 -translate-x-1/2 space-y-1 rounded-2xl bg-black/50 px-3 py-1.5 text-xs">
@@ -691,7 +785,7 @@ function Camera({mode,setMode,split,setSplit,count,lastThumb,onCapture,onDone,on
       <div className="flex items-center justify-between px-4 py-2">
         <ImportBtn onFiles={onImport} className={side} ><Icon n="image" c="h-7 w-7"/></ImportBtn>
         <button onClick={()=>{setAuto(a=>!a);setLive(false)}} className={side+' '+(auto?'text-[#4aa3ff]':'text-white/60')} title={auto?'Auto capture ON':'Auto capture OFF'}><Icon n="auto" c="h-7 w-7"/></button>
-        <button disabled={!ready} onClick={()=>shootRef.current()} className="grid h-20 w-20 place-items-center rounded-full border-4 border-white transition active:scale-90 disabled:opacity-40"><span className="h-14 w-14 rounded-full bg-neutral-300"/></button>
+        <button disabled={!ready||proc} onClick={()=>shootRef.current()} className="grid h-20 w-20 place-items-center rounded-full border-4 border-white transition active:scale-90 disabled:opacity-40"><span className="h-14 w-14 rounded-full bg-neutral-300"/></button>
         <button onClick={()=>setFlash(f=>f==='off'?'on':f==='on'?'auto':'off')} className={'relative '+side+' '+(flash==='on'?'text-yellow-300':'text-white')} title={'Flash: '+flash}>
           <Icon n="bolt" c="h-7 w-7"/>
           {flash==='auto'&&<b className="absolute bottom-1 right-0.5 text-sm">A</b>}
@@ -732,26 +826,42 @@ function CropView({src,corners,onChange}){
     onPointerUp={end} onPointerCancel={end}/>;
 }
 
+/* "before" picture for the comparison: the flattened page with no filter, rendered in the worker */
+function useBefore(p,on){
+  const [b,setB]=useState(null);
+  const ck=JSON.stringify(p.corners)+'|'+(p.sv||0)+'|'+p.id;
+  useEffect(()=>{let dead=false;setB(null);if(!on)return;
+    cvRender(p,{filter:'original'},1400).then(c=>{if(!dead)setB(c)}).catch(()=>{});
+    return()=>{dead=true}},[ck,on]);
+  return b;
+}
+
 /* ---------- Edit screen (live preview on a small copy, full-resolution result applied when you pause) ---------- */
 const mkLp=q=>({filter:q.filter,br:q.br||0,ct:q.ct||0,sh:q.sh||0,ex:q.ex||0,it:q.it==null?100:q.it});
 function Edit({page:p,idx,total,upd,run,onBack,onNav,applyAll}){
   const [view,setView]=useState('result');
   const [lp,setLp]=useState(()=>mkLp(p)),[prev,setPrev]=useState(null);
-  const lpR=useRef(lp),timer=useRef(null),pend=useRef(null),raf=useRef(0),pRef=useRef(p);pRef.current=p;
+  const lpR=useRef(lp),timer=useRef(null),pend=useRef(null),pBusy=useRef(false),again=useRef(false),pRef=useRef(p);pRef.current=p;
   useEffect(()=>{if(timer.current)return;const n=mkLp(p);lpR.current=n;setLp(n);setPrev(null)},[p.id,p.v]);
-  useEffect(()=>()=>{cancelAnimationFrame(raf.current)},[]);
   const flush=()=>{if(timer.current){clearTimeout(timer.current);timer.current=null;const f=pend.current;pend.current=null;f&&f()}};
-  const showPrev=()=>{if(raf.current)return;raf.current=requestAnimationFrame(()=>{raf.current=0;
-    try{const fe=getFlat(pRef.current);setPrev(enhance(getProxy(fe,1000),lpR.current,{noise:0}))}catch(e){}})};
+  const showPrev=()=>{
+    if(pBusy.current){again.current=true;return}
+    pBusy.current=true;
+    (async()=>{
+      try{const c=await cvRender(pRef.current,lpR.current,900);setPrev(c)}catch(e){}
+      pBusy.current=false;
+      if(again.current){again.current=false;showPrev()}
+    })();
+  };
   const change=patch=>{
     const n={...lpR.current,...patch};lpR.current=n;setLp(n);showPrev();
     const id=pRef.current.id;pend.current=()=>upd(id,n);
     clearTimeout(timer.current);
-    timer.current=setTimeout(()=>{timer.current=null;const f=pend.current;pend.current=null;f&&f()},450);
+    timer.current=setTimeout(()=>{timer.current=null;const f=pend.current;pend.current=null;f&&f()},600);
   };
-  const reset=()=>run('Resetting…',async()=>{flush();await cvReady();const md=MODES.find(x=>x.k===p.m)||MODES[2];let d=null;try{d=md.detect?detectFull(p.src):null}catch{}
+  const reset=()=>run('Resetting…',async()=>{flush();const md=MODES.find(x=>x.k===p.m)||MODES[2];let d=null;try{d=md.detect?await cvDetect(p.src,.15,800,true):null}catch{}
     await upd(p.id,{corners:d||exactFrame(p.src),filter:md.f,br:0,ct:md.ct||0,sh:0,ex:0,it:100})});
-  const fe=useMemo(()=>{try{return getFlat(p)}catch(e){return null}},[p.id,p.sv,p.corners,p.src,p.aspect]);
+  const bef=useBefore(p,view==='compare');
   const after=prev||p.result;
   return <div className="fade mx-auto max-w-3xl pb-10">
     <Bar title={`Edit page ${idx+1} / ${total}`} onBack={()=>{flush();onBack()}} right={<Btn red onClick={()=>{flush();onBack()}} className="!py-1.5"><Icon n="check" c="h-4 w-4"/>Done</Btn>}/>
@@ -762,11 +872,11 @@ function Edit({page:p,idx,total,upd,run,onBack,onNav,applyAll}){
     <div className="px-3">
       {view==='crop'&&<CropView src={p.src} corners={p.corners} onChange={c=>upd(p.id,{corners:c})}/>}
       {view==='result'&&<CanvasView canvas={after}/>}
-      {view==='compare'&&fe&&<Wipe before={getProxy(fe,1400)} after={after}/>}
+      {view==='compare'&&(bef?<Wipe before={bef} after={after}/>:<p className="p-8 text-center text-sm text-slate-500">Preparing comparison…</p>)}
       {view!=='crop'&&<p className="mt-2 text-center text-[11px] text-slate-400">{prev?'Live preview · full-resolution version is applied when you stop adjusting':'Showing full-resolution result'}</p>}
     </div>
     <div className="no-scrollbar flex gap-2 overflow-x-auto p-3">
-      <Btn onClick={()=>run('Detecting edges…',async()=>{await cvReady();const d=detectFull(p.src);if(!d)throw new Error('No document edges found. Drag the corners manually.');await upd(p.id,{corners:d})})} className="shrink-0"><Icon n="wand" c="h-4 w-4"/>Auto-detect</Btn>
+      <Btn onClick={()=>run('Detecting edges…',async()=>{const d=await cvDetect(p.src,.15,800,true);if(!d)throw new Error('No document edges found. Drag the corners manually.');await upd(p.id,{corners:d})})} className="shrink-0"><Icon n="wand" c="h-4 w-4"/>Auto-detect</Btn>
       <Btn onClick={()=>upd(p.id,{corners:exactFrame(p.src)})} className="shrink-0"><Icon n="crop" c="h-4 w-4"/>Full page</Btn>
       <Btn onClick={()=>run('Rotating…',()=>upd(p.id,{src:rotCanvas(p.src),corners:rotPts(p.corners,p.src.height),sv:(p.sv||0)+1}))} className="shrink-0"><Icon n="rotate" c="h-4 w-4"/>Rotate</Btn>
       <Btn onClick={reset} className="shrink-0">Reset</Btn>
@@ -790,10 +900,9 @@ function Edit({page:p,idx,total,upd,run,onBack,onNav,applyAll}){
 
 /* Original vs Enhanced for one page (opened from the Create PDF screen) */
 function CompareModal({page,onClose}){
-  const [d,setD]=useState(null);
-  useEffect(()=>{try{setD({b:getProxy(getFlat(page),1400),a:page.result})}catch(e){}},[page.id,page.v]);
+  const bef=useBefore(page,true);
   return <div className="fade fixed inset-0 z-40 flex flex-col bg-slate-50"><Bar title="Original vs Enhanced" onBack={onClose}/>
-    <div className="min-h-0 flex-1 overflow-y-auto p-3">{d?<Wipe before={d.b} after={d.a}/>:<p className="p-8 text-center text-sm text-slate-500">Preparing comparison…</p>}</div></div>;
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">{bef?<Wipe before={bef} after={page.result}/>:<p className="p-8 text-center text-sm text-slate-500">Preparing comparison…</p>}</div></div>;
 }
 
 /* ---------- Pages (multi-page manager) ---------- */
@@ -843,7 +952,7 @@ function OcrModal({text,onClose,say}){
 
 /* ---------- PDF creation screen ---------- */
 function PdfScreen({pages,go,run,setBusy,onDone}){
-  const [o,setO]=useState({name:'Scan '+new Date().toISOString().slice(0,10),size:'A4',orient:'auto',q:92,compress:false,margin:5,pw:''});
+  const [o,setO]=useState({name:'Scan '+new Date().toISOString().slice(0,10),size:'A4',orient:'auto',q:95,compress:false,margin:5,pw:''});
   const [prev,setPrev]=useState(null),[info,setInfo]=useState(''),[cmp,setCmp]=useState(null);
   const cache=useRef({k:'',b:null});
   const set=(k,v)=>{setO(x=>({...x,[k]:v}));setPrev(null)};
@@ -938,7 +1047,7 @@ function ToolPanel({t,run,say}){
     await need('pdflib');
     const {PDFDocument,degrees,StandardFonts,rgb}=PDFLib,mk=(b,n)=>({blob:new Blob([b],{type:'application/pdf'}),name:n}),load=async f=>PDFDocument.load(await f.arrayBuffer());
     let out=[];
-    if(t==='img'){const cs=[];for(const f of files)cs.push(await fileToCanvas(f,MAXO));out=[{blob:await buildPdf(cs,{size,orient:'auto',q:93,margin:5}),name:'images.pdf'}]}
+    if(t==='img'){const cs=[];for(const f of files)cs.push(await fileToCanvas(f,MAXO));out=[{blob:await buildPdf(cs,{size,orient:'auto',q:95,margin:5}),name:'images.pdf'}]}
     else if(t==='merge'){if(files.length<2)throw new Error('Choose at least 2 PDFs.');const d=await PDFDocument.create();
       for(const f of files){const s=await load(f);(await d.copyPages(s,s.getPageIndices())).forEach(p=>d.addPage(p))}out=[mk(await d.save(),'merged.pdf')]}
     else if(t==='compress'){const L={low:[1,.5,1100],med:[1.3,.65,1500],high:[1.8,.8,2000]}[lvl];
@@ -1003,14 +1112,15 @@ function App(){
       setPagesS(ps=>ps.map(x=>x.id===id?{...x,...patch,result:np.result,thumb:np.thumb,v:np.v}:x))}
     catch(e){say(e.message)}});return q.current};
   const applyAll=patch=>run('Applying to all pages…',async()=>{const ids=pr.current.map(p=>p.id);for(let i=0;i<ids.length;i++){setBusy({t:`Applying to page ${i+1} of ${ids.length}`});await upd(ids[i],patch)}});
-  const newPage=(src,corners,opts={})=>{const mk=opts.mode||mode,md=MODES.find(x=>x.k===mk);
-    return renderPage({id:idc.current++,m:mk,src,corners:corners||exactFrame(src),filter:opts.filter||md.f,br:0,ct:opts.filter?0:(md.ct||0),sh:0,ex:0,it:100,aspect:opts.filter?undefined:md.aspect,sel:true,v:0,sv:0});};
+  const newPage=(src,corners,opts={})=>{const mk=opts.mode||mode,md=MODES.find(x=>x.k===mk),cn=corners||exactFrame(src);
+    const useAspect=!opts.filter&&md.aspect&&!exactQ(cn,src.width,src.height);   // card ratio only when the card was really found
+    return renderPage({id:idc.current++,m:mk,src,corners:cn,filter:opts.filter||md.f,br:0,ct:opts.filter?0:(md.ct||0),sh:0,ex:0,it:100,aspect:useAspect?md.aspect:undefined,sel:true,v:0,sv:0});};
   // Book mode: flatten the whole spread, then cut it in the middle into a left and a right page
   const makePages=async(src,corners,opts={})=>{
     const mk=opts.mode||mode;
     if(mk==='book'&&bookSplit&&!opts.filter){
-      await cvReady();
-      const flat=warp(src,corners||exactFrame(src));
+      const tmp={id:'b'+(idc.current++),sv:0,src,corners:corners||exactFrame(src),aspect:0};
+      const flat=await cvRender(tmp,{filter:'original'},0);
       if(flat.width>=flat.height*1.1){
         const hw=Math.floor(flat.width/2),out=[];
         for(const [x,w] of [[0,hw],[hw,flat.width-hw]]){
@@ -1019,6 +1129,7 @@ function App(){
         }
         return out;
       }
+      return [await newPage(flat,exactFrame(flat),{mode:mk})];
     }
     return [await newPage(src,corners,opts)];
   };
@@ -1030,7 +1141,7 @@ function App(){
     for(const f of files){
       await nextFrame();
       if(f.type==='application/pdf'||/\.pdf$/i.test(f.name)){const cs=await pdfToCanvases(f,'auto',(i,n)=>setBusy({t:`Reading ${f.name}: ${i}/${n}`}));for(const c of cs)out.push(await newPage(c,exactFrame(c),{filter:'original'}))}
-      else if(f.type.startsWith('image/')||/\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name)){setBusy({t:'Processing '+f.name});const c=await fileToCanvas(f);await cvReady();let d=null;try{d=md.detect?detectFull(c,.1):null}catch{}out.push(...await makePages(c,d||exactFrame(c)))}
+      else if(f.type.startsWith('image/')||/\.(jpe?g|png|webp|bmp|gif)$/i.test(f.name)){setBusy({t:'Processing '+f.name});const c=await fileToCanvas(f);let d=null;try{d=md.detect?await cvDetect(c,.1,800,true):null}catch{}out.push(...await makePages(c,d||exactFrame(c)))}
     }
     if(!out.length)throw new Error('No supported images or PDFs selected.');
     setPagesS(ps=>[...ps,...out]);setScr('pages');
