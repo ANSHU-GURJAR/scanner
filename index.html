@@ -85,16 +85,21 @@ const share=async(blob,name)=>{const f=new File([blob],name,{type:'application/p
 const nextFrame=()=>new Promise(r=>{let d=false;const f=()=>{if(!d){d=true;r()}};requestAnimationFrame(()=>setTimeout(f,0));setTimeout(f,100)});
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
 
-const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
-  return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
+/* corners always come back as TL, TR, BR, BL (angle sort: never twisted) */
+const orderPts=p=>{
+  const cx=p.reduce((s,q)=>s+q.x,0)/p.length,cy=p.reduce((s,q)=>s+q.y,0)/p.length;
+  const a=[...p].sort((u,v)=>Math.atan2(u.y-cy,u.x-cx)-Math.atan2(v.y-cy,v.x-cx));
+  let k=0;a.forEach((q,i)=>{if(q.x+q.y<a[k].x+a[k].y)k=i});
+  return [0,1,2,3].map(i=>a[(k+i)%4]);
+};
 const exactFrame=c=>[{x:0,y:0},{x:c.width,y:0},{x:c.width,y:c.height},{x:0,y:c.height}];
 const fullFrame=exactFrame;
 const exactQ=(c,W,H)=>{const [tl,tr,br,bl]=orderPts(c);
   return tl.x<1.5&&tl.y<1.5&&Math.abs(tr.x-W)<1.5&&tr.y<1.5&&Math.abs(br.x-W)<1.5&&Math.abs(br.y-H)<1.5&&bl.x<1.5&&Math.abs(bl.y-H)<1.5};
 
-/* working-size limits: 4000 px / 10 MP on normal phones, 3000 px / 6.5 MP on low-RAM phones */
+/* working-size limits: 3200 px / 7 MP on normal phones, 2400 px / 4.5 MP on low-RAM phones (fast + sharp enough for ~270 dpi A4) */
 const LOW=(navigator.deviceMemory||4)<=3;
-const MAXO=LOW?3000:4000,MAXPX=LOW?6.5e6:10e6;
+const MAXO=LOW?2400:3200,MAXPX=LOW?4.5e6:7e6;
 async function fileToCanvas(f,max=MAXO){
   let bmp;try{bmp=await createImageBitmap(f,{imageOrientation:'from-image'})}catch{bmp=await createImageBitmap(f)}
   const s=Math.min(1,max/Math.max(bmp.width,bmp.height),Math.sqrt(MAXPX/(bmp.width*bmp.height))),c=$c(Math.round(bmp.width*s),Math.round(bmp.height*s)),x=c.getContext('2d');
@@ -121,8 +126,12 @@ function workerMain(){
   const clamp=(x,a,b)=>x<a?a:x>b?b:x;
   const smooth=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
   const kill=m=>{try{if(m&&!m.isDeleted())m.delete()}catch(e){}};
-  const orderPts=p=>{const s=q=>q.x+q.y,d=q=>q.x-q.y;
-    return [p.reduce((a,b)=>s(b)<s(a)?b:a),p.reduce((a,b)=>d(b)>d(a)?b:a),p.reduce((a,b)=>s(b)>s(a)?b:a),p.reduce((a,b)=>d(b)<d(a)?b:a)]};
+  const orderPts=p=>{
+    const cx=p.reduce((s,q)=>s+q.x,0)/p.length,cy=p.reduce((s,q)=>s+q.y,0)/p.length;
+    const a=[...p].sort((u,v)=>Math.atan2(u.y-cy,u.x-cx)-Math.atan2(v.y-cy,v.x-cx));
+    let k=0;a.forEach((q,i)=>{if(q.x+q.y<a[k].x+a[k].y)k=i});
+    return [0,1,2,3].map(i=>a[(k+i)%4]);
+  };
 
   let loaded=false;
   for(const u of URLS){try{importScripts(u);loaded=true;break}catch(e){}}
@@ -137,7 +146,7 @@ function workerMain(){
 
   function start(){
     const lowMem=(self.navigator&&self.navigator.deviceMemory||4)<=3;
-    const MAXO=lowMem?3000:4000,MAXPX=lowMem?6.5e6:10e6;
+    const MAXO=lowMem?2400:3200,MAXPX=lowMem?4.5e6:7e6;
     const mkRGBA=(buf,w,h)=>{const m=new cv.Mat(h,w,cv.CV_8UC4);m.data.set(new Uint8ClampedArray(buf));return m};
     const post=(id,mat,extra)=>{
       const d=new Uint8ClampedArray(mat.data);
@@ -159,14 +168,22 @@ function workerMain(){
     function detectQuad(m,minFrac,deep){
       const g=new cv.Mat(),e=new cv.Mat(),ed=new cv.Mat(),k3=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(3,3)),k5=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(5,5));
       const W=m.cols,H=m.rows,area0=W*H;let best=null,bestS=0;
-      /* share of the quad's sides that lie on real image edges */
-      const support=q=>{let hit=0,tot=0;
-        for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],len=Math.hypot(b.x-a.x,b.y-a.y),n=Math.max(8,Math.round(len/3));
+      /* how much of the quad's sides lie on real image edges. Sides running along the frame border are ignored,
+         and at least 3 real sides must be inside the frame. Returns {all,min}. */
+      const support=q=>{
+        let hit=0,tot=0,mn=1,sides=0;
+        for(let i=0;i<4;i++){
+          const a=q[i],b=q[(i+1)%4],len=Math.hypot(b.x-a.x,b.y-a.y),n=Math.max(8,Math.round(len/3));
+          let h=0,inside=0;
           for(let k=0;k<=n;k++){
             const x=Math.round(a.x+(b.x-a.x)*k/n),y=Math.round(a.y+(b.y-a.y)*k/n);
-            if(x<=2||y<=2||x>=W-3||y>=H-3)continue;   // frame border: no edge expected there
-            tot++;if(ed.data[y*W+x])hit++}}
-        return tot>=12?hit/tot:0};
+            if(x<=2||y<=2||x>=W-3||y>=H-3)continue;
+            inside++;if(ed.data[y*W+x])h++;
+          }
+          if(inside<(n+1)*.5)continue;
+          sides++;mn=Math.min(mn,h/inside);hit+=h;tot+=inside;
+        }
+        return (sides>=3&&tot>=12)?{all:hit/tot,min:mn}:{all:0,min:0}};
       const consider=(bin,mode)=>{const cs=new cv.MatVector(),h=new cv.Mat();
         try{
           cv.findContours(bin,cs,h,mode,cv.CHAIN_APPROX_SIMPLE);
@@ -186,7 +203,7 @@ function workerMain(){
                       const q=[0,1,2,3].map(j=>({x:ap.data32S[j*2],y:ap.data32S[j*2+1]}));
                       if(quadOK(q,W,H)){
                         const a=cv.contourArea(ap),sp=support(q);
-                        if(sp>=.55&&a>=area0*minFrac){const s=a*sp*sp;if(s>bestS){bestS=s;best=q}}
+                        if(sp.all>=.6&&sp.min>=.35&&a>=area0*minFrac){const s=a*sp.all*sp.all;if(s>bestS){bestS=s;best=q}}
                       }
                       break;
                     }
@@ -208,7 +225,7 @@ function workerMain(){
             try{
               const r=cv.minAreaRect(c),pts=cv.RotatedRect.points(r);
               const q=pts.map(p=>({x:Math.round(clamp(p.x,0,W-1)),y:Math.round(clamp(p.y,0,H-1))}));
-              if(quadOK(q,W,H)&&support(q)>=.5)best=q;
+              if(quadOK(q,W,H)){const sp=support(q);if(sp.all>=.5&&sp.min>=.3)best=q}
             }finally{c.delete()}
           }
         }finally{cs.delete();h.delete()}};
@@ -251,7 +268,7 @@ function workerMain(){
       if(aspect)ratio=wE>=hE?aspect:1/aspect;
       else{
         ratio=estAspect(tl,tr,br,bl,src.cols,src.rows);
-        if(!ratio||ratio<.2||ratio>5||Math.max(ratio/simple,simple/ratio)>1.5)ratio=simple;
+        if(!ratio||ratio<.2||ratio>5||Math.max(ratio/simple,simple/ratio)>1.35)ratio=simple;
       }
       let W=Math.max(wE,hE*ratio),H=W/ratio;
       const s=Math.min(1,MAXO/Math.max(W,H),Math.sqrt(MAXPX/(W*H)));
@@ -456,8 +473,8 @@ function workerMain(){
 }
 
 /* ---------- main-thread side of the worker ---------- */
-const CVW={w:null,p:null,pend:{},n:1};
-function cvFailAll(msg){const p=CVW.pend;CVW.pend={};Object.keys(p).forEach(k=>p[k].rej(new Error(msg)))}
+const CVW={w:null,p:null,pend:{},n:1,key:null};
+function cvFailAll(msg){const p=CVW.pend;CVW.pend={};CVW.key=null;Object.keys(p).forEach(k=>p[k].rej(new Error(msg)))}
 function cvStart(){
   if(CVW.p)return CVW.p;
   const prom=new Promise((res,rej)=>{
@@ -486,15 +503,16 @@ async function cvCall(msg,transfer){
     try{CVW.w.postMessage(Object.assign({},msg,{id}),transfer||[])}catch(e){delete CVW.pend[id];rej(e)}});
 }
 function rgbaToCanvas(r){const c=$c(r.w,r.h);c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(r.buf),r.w,r.h),0,0);return c}
-/* render one page (flatten + filter) in the worker. maxOut>0 = small, fast preview */
+/* render one page (flatten + filter) in the worker. maxOut>0 = small, fast preview.
+   The pixels are sent together with the request when the worker does not hold this page yet (no extra round trip). */
 async function cvRender(p,o,maxOut=0){
   const key=p.id+':'+(p.sv||0);
   const msg={op:'render',key,corners:p.corners,aspect:p.aspect||0,filter:o.filter,br:o.br||0,ct:o.ct||0,sh:o.sh||0,ex:o.ex||0,it:o.it==null?100:o.it,maxOut};
-  let r=await cvCall(msg);
-  if(r.need){
-    const g=p.src.getContext('2d').getImageData(0,0,p.src.width,p.src.height);
-    r=await cvCall(Object.assign({},msg,{buf:g.data.buffer,w:g.width,h:g.height}),[g.data.buffer]);
-  }
+  const withPixels=()=>{const g=p.src.getContext('2d').getImageData(0,0,p.src.width,p.src.height);CVW.key=key;
+    return cvCall(Object.assign({},msg,{buf:g.data.buffer,w:g.width,h:g.height}),[g.data.buffer])};
+  let r;
+  if(CVW.key!==key)r=await withPixels();
+  else{r=await cvCall(msg);if(r.need)r=await withPixels()}
   return rgbaToCanvas(r);
 }
 async function cvDetect(canvas,minFrac=.15,maxDim=800,deep=true){
@@ -700,7 +718,7 @@ function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDo
 
   useEffect(()=>{const el=mrow.current&&mrow.current.querySelector('[data-on="1"]');el&&el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'})},[mode]);
 
-  /* HD: sensor still (capped at 4000 px). FAST (or if the browser can't): the live video frame. */
+  /* HD: sensor still (capped at 3200 px). FAST (or if the browser can't): the live video frame. */
   const grab=async()=>{
     const S=st.current,v=vref.current,tr=S.stream&&S.stream.getVideoTracks()[0];
     if(cb.current.hq&&tr&&window.ImageCapture&&!S.noPhoto){
@@ -708,9 +726,9 @@ function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDo
         if(!S.ic)S.ic=new ImageCapture(tr);
         if(S.photoCaps===undefined){try{S.photoCaps=await S.ic.getPhotoCapabilities()}catch{S.photoCaps=null}}
         const pc=S.photoCaps,opt={};
-        if(pc&&pc.imageWidth&&pc.imageHeight){const mw=pc.imageWidth.max,mh=pc.imageHeight.max,w=Math.min(mw,4000);opt.imageWidth=w;opt.imageHeight=Math.round(mh*w/mw)}
+        if(pc&&pc.imageWidth&&pc.imageHeight){const mw=pc.imageWidth.max,mh=pc.imageHeight.max,w=Math.min(mw,3200);opt.imageWidth=w;opt.imageHeight=Math.round(mh*w/mw)}
         if(pc&&Array.isArray(pc.fillLightMode)&&pc.fillLightMode.includes('off'))opt.fillLightMode='off';
-        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),3500))]);
+        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),6000))]);
         let c=await fileToCanvas(blob,MAXO);
         if(v.videoWidth<v.videoHeight&&c.width>c.height)c=rotCanvas(c);
         return c;
@@ -852,7 +870,8 @@ function CropView({src,corners,onChange}){
     }
   },[bg,pts,act,W,H]);
   const pos=e=>{const b=ref.current.getBoundingClientRect();return{x:Math.min(src.width,Math.max(0,(e.clientX-b.left)*src.width/b.width)),y:Math.min(src.height,Math.max(0,(e.clientY-b.top)*src.height/b.height))}};
-  const end=()=>{if(drag.current>=0){drag.current=-1;setAct(-1);onChange(pr.current)}};
+  /* on release the corners are re-ordered (TL,TR,BR,BL) so the page can never be twisted */
+  const end=()=>{if(drag.current>=0){drag.current=-1;setAct(-1);const n=orderPts(pr.current);pr.current=n;setPts(n);onChange(n)}};
   return <canvas ref={ref} className="mx-auto max-h-[60vh] max-w-full rounded-xl shadow-md ring-1 ring-slate-200" style={{touchAction:'none'}}
     onPointerDown={e=>{const p=pos(e);let bi=-1,bd=1e9;pr.current.forEach((q,i)=>{const d=Math.hypot(q.x-p.x,q.y-p.y);if(d<bd){bd=d;bi=i}});
       if(bd<src.width/6){drag.current=bi;setAct(bi);e.currentTarget.setPointerCapture(e.pointerId)}}}
@@ -985,14 +1004,19 @@ function OcrModal({text,onClose,say}){
 }
 
 /* ---------- PDF creation screen ---------- */
-function PdfScreen({pages,go,run,setBusy,onDone}){
+function PdfScreen({pages,settle,go,run,setBusy,onDone}){
   const [o,setO]=useState({name:'Scan '+new Date().toISOString().slice(0,10),size:'A4',orient:'auto',q:95,compress:false,margin:5,pw:''});
   const [prev,setPrev]=useState(null),[info,setInfo]=useState(''),[cmp,setCmp]=useState(null);
   const cache=useRef({k:'',b:null});
   const set=(k,v)=>{setO(x=>({...x,[k]:v}));setPrev(null)};
-  const key=()=>{const {name:_n,...r}=o;return JSON.stringify(r)+'|'+pages.map(p=>p.id+':'+(p.v||0)).join(',')};
-  const make=async()=>{const k=key();if(cache.current.k===k&&cache.current.b)return cache.current.b;
-    const b=await buildPdf(pages.map(p=>p.result),o,(i,n)=>setBusy({t:`Building PDF: page ${i+1} of ${n}`}),pages.map(p=>p.filter==='bw'||p.filter==='gray'));cache.current={k,b};return b};
+  /* waits until every crop / filter change has finished rendering, then uses the latest pages */
+  const make=async()=>{
+    const ps=await settle();
+    if(!ps.length)throw new Error('No pages selected.');
+    const {name:_n,...r}=o,k=JSON.stringify(r)+'|'+ps.map(p=>p.id+':'+(p.v||0)).join(',');
+    if(cache.current.k===k&&cache.current.b)return cache.current.b;
+    const b=await buildPdf(ps.map(p=>p.result),o,(i,n)=>setBusy({t:`Building PDF: page ${i+1} of ${n}`}),ps.map(p=>p.filter==='bw'||p.filter==='gray'));
+    cache.current={k,b};return b};
   const name=()=>(o.name.trim()||'scan').replace(/\.pdf$/i,'')+'.pdf';
   return <div className="fade mx-auto max-w-xl pb-10">
     <Bar title="Create PDF" onBack={()=>go('pages')}/>
@@ -1127,7 +1151,7 @@ function ToolPanel({t,run,say}){
 function App(){
   const [scr,setScr]=useState('home'),[pages,setPages]=useState([]),[mode,setMode]=useState('doc'),[busy,setBusy]=useState(null),[toast,setToast]=useState(null),[bookSplit,setBookSplit]=useState(true);
   const [editId,setEditId]=useState(null),[retake,setRetake]=useState(null),[pdf,setPdf]=useState(null),[tool,setTool]=useState(null),[ocr,setOcr]=useState(null),[eng,setEng]=useState('loading'),[pend,setPend]=useState(0);
-  const pr=useRef([]),idc=useRef(1),tt=useRef(),q=useRef(Promise.resolve()),capQ=useRef(Promise.resolve());
+  const pr=useRef([]),idc=useRef(1),tt=useRef(),q=useRef(Promise.resolve()),capQ=useRef(Promise.resolve()),jobV=useRef({});
   const setPagesS=f=>{const n=typeof f==='function'?f(pr.current):f;pr.current=n;setPages(n)};
   const say=(t,a)=>{setToast({t,a});clearTimeout(tt.current);tt.current=setTimeout(()=>setToast(null),a?6000:3000)};
   const run=async(t,fn)=>{setBusy({t});await nextFrame();try{await fn()}catch(e){say(e.message||String(e))}finally{setBusy(null)}};
@@ -1140,11 +1164,23 @@ function App(){
   useEffect(()=>{boot()},[]);
   useEffect(()=>{if(!pages.length)return;const h=e=>{e.preventDefault();e.returnValue=''};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[pages.length]);
 
-  const upd=(id,patch)=>{q.current=q.current.then(async()=>{
-    const cur=pr.current.find(x=>x.id===id);if(!cur)return;
-    try{const np=await renderPage({...cur,...patch});
-      setPagesS(ps=>ps.map(x=>x.id===id?{...x,...patch,result:np.result,thumb:np.thumb,v:np.v}:x))}
-    catch(e){say(e.message)}});return q.current};
+  /* The change (crop / filter / rotate) is saved at once; only the heavy re-render is queued.
+     If a newer change arrives for the same page, the older render is skipped. */
+  const upd=(id,patch)=>{
+    setPagesS(ps=>ps.map(x=>x.id===id?{...x,...patch}:x));
+    const v=jobV.current[id]=(jobV.current[id]||0)+1;
+    q.current=q.current.then(async()=>{
+      if(jobV.current[id]!==v)return;
+      const cur=pr.current.find(x=>x.id===id);if(!cur)return;
+      try{
+        const np=await renderPage(cur);
+        if(jobV.current[id]!==v)return;
+        setPagesS(ps=>ps.map(x=>x.id===id?{...x,result:np.result,thumb:np.thumb,v:np.v}:x));
+      }catch(e){say(e.message)}
+    });
+    return q.current};
+  /* resolves with the up-to-date selected pages once every queued render has finished */
+  const settle=async()=>{let t;do{t=q.current;await t}while(t!==q.current);return pr.current.filter(p=>p.sel)};
   const applyAll=patch=>run('Applying to all pages…',async()=>{const ids=pr.current.map(p=>p.id);for(let i=0;i<ids.length;i++){setBusy({t:`Applying to page ${i+1} of ${ids.length}`});await upd(ids[i],patch)}});
   const newPage=(src,corners,opts={})=>{const mk=opts.mode||mode,md=MODES.find(x=>x.k===mk),cn=corners||exactFrame(src);
     const useAspect=!opts.filter&&md.aspect&&!exactQ(cn,src.width,src.height);   // card ratio only when the card was really found
@@ -1198,7 +1234,7 @@ function App(){
   const delPages=ids=>{if(!ids.length)return;const prev=pr.current;setPagesS(ps=>ps.filter(p=>!ids.includes(p.id)));
     say(ids.length+' page(s) deleted',{label:'UNDO',fn:()=>setPagesS(prev)})};
   const runOcr=lang=>run('Preparing OCR…',async()=>{
-    const list=pr.current.filter(p=>p.sel);if(!list.length)throw new Error('Select at least one page.');
+    const list=(await settle());if(!list.length)throw new Error('Select at least one page.');
     await need('tess');
     let idx=0,last='';
     const worker=await Tesseract.createWorker(lang,1,{logger:m=>{const t=`OCR page ${Math.min(idx+1,list.length)}/${list.length}: ${m.status||''} ${m.progress?Math.round(m.progress*100)+'%':''}`;if(t!==last){last=t;setBusy({t})}}});
@@ -1248,7 +1284,7 @@ function App(){
       onEdit={id=>{setEditId(id);go('edit')}} onRetake={i=>{setRetake(i);go('camera')}}/>}
     {scr==='edit'&&editIdx>=0&&<Edit page={pages[editIdx]} idx={editIdx} total={pages.length} upd={upd} run={run} applyAll={applyAll} onBack={()=>go('pages')}
       onNav={d=>{const n=pages[editIdx+d];if(n)setEditId(n.id)}}/>}
-    {scr==='pdf'&&<PdfScreen pages={sel} go={go} run={run} setBusy={setBusy} onDone={(blob,name,pw)=>{setPdf({blob,name,pw});go('export')}}/>}
+    {scr==='pdf'&&<PdfScreen pages={sel} settle={settle} go={go} run={run} setBusy={setBusy} onDone={(blob,name,pw)=>{setPdf({blob,name,pw});go('export')}}/>}
     {scr==='export'&&pdf&&<Export pdf={pdf} setPdf={setPdf} go={go} say={say} reset={()=>{setPagesS([]);setPdf(null);setRetake(null);go('camera')}}/>}
     {scr==='docs'&&<Docs go={go} say={say}/>}
     {scr==='tools'&&<div className="mx-auto max-w-xl pb-10"><Bar title="PDF Tools" onBack={()=>tool?setTool(null):go('home')}/>
