@@ -97,9 +97,9 @@ const fullFrame=exactFrame;
 const exactQ=(c,W,H)=>{const [tl,tr,br,bl]=orderPts(c);
   return tl.x<1.5&&tl.y<1.5&&Math.abs(tr.x-W)<1.5&&tr.y<1.5&&Math.abs(br.x-W)<1.5&&Math.abs(br.y-H)<1.5&&bl.x<1.5&&Math.abs(bl.y-H)<1.5};
 
-/* working-size limits: 3200 px / 7 MP on normal phones, 2400 px / 4.5 MP on low-RAM phones (fast + sharp enough for ~270 dpi A4) */
+/* working-size limits: 3600 px / 8 MP on normal phones (~300 dpi on A4), 2600 px / 5 MP on low-RAM phones */
 const LOW=(navigator.deviceMemory||4)<=3;
-const MAXO=LOW?2400:3200,MAXPX=LOW?4.5e6:7e6;
+const MAXO=LOW?2600:3600,MAXPX=LOW?5e6:8e6;
 async function fileToCanvas(f,max=MAXO){
   let bmp;try{bmp=await createImageBitmap(f,{imageOrientation:'from-image'})}catch{bmp=await createImageBitmap(f)}
   const s=Math.min(1,max/Math.max(bmp.width,bmp.height),Math.sqrt(MAXPX/(bmp.width*bmp.height))),c=$c(Math.round(bmp.width*s),Math.round(bmp.height*s)),x=c.getContext('2d');
@@ -146,7 +146,7 @@ function workerMain(){
 
   function start(){
     const lowMem=(self.navigator&&self.navigator.deviceMemory||4)<=3;
-    const MAXO=lowMem?2400:3200,MAXPX=lowMem?4.5e6:7e6;
+    const MAXO=lowMem?2600:3600,MAXPX=lowMem?5e6:8e6;
     const mkRGBA=(buf,w,h)=>{const m=new cv.Mat(h,w,cv.CV_8UC4);m.data.set(new Uint8ClampedArray(buf));return m};
     const post=(id,mat,extra)=>{
       const d=new Uint8ClampedArray(mat.data);
@@ -367,11 +367,11 @@ function workerMain(){
       return lut;
     }
     const PRE={
-     color:{shade:0,a0:1.04,loT:0,hiT:.985,sh:.35},
-     gray:{shade:.6,a0:1.06,loT:0,hiT:.975,sh:.45,gray:1},
-     magic:{shade:1,a0:1.12,loT:.02,hiT:.965,sh:.5,doc:1},
-     enhance:{shade:1,a0:1.2,loT:.02,hiT:.96,sh:.8,doc:1},
-     bw:{shade:1,sh:.6,gray:1}};
+     color:{shade:0,a0:1.04,loT:0,hiT:.985,sh:.55},
+     gray:{shade:.6,a0:1.06,loT:0,hiT:.975,sh:.7,gray:1},
+     magic:{shade:1,a0:1.12,loT:.02,hiT:.965,sh:.8,doc:1},
+     enhance:{shade:1,a0:1.2,loT:.02,hiT:.96,sh:1.1,doc:1},
+     bw:{shade:1,sh:.8,gray:1}};
 
     /* returns {mat: RGBA, own: bool}. Original with no adjustments returns the input untouched. */
     function enhance(src,o,noise){
@@ -389,7 +389,7 @@ function workerMain(){
           if(Pm.shade>0){try{shade(cur,Pm.shade,f==='bw'?.25:.35,f==='bw'?.5:.6)}catch(e){}}
           if(Pm.gray){const g=mk();cv.cvtColor(cur,g,cv.COLOR_RGB2GRAY);const old=cur;cur=g;kill(old)}
         }
-        const sig=clamp(longS/2600,.6,1.4),nf=1/(1+Math.max(0,noise-1.5)/4);
+        const sig=clamp(longS/3400,.6,1.0),nf=1/(1+Math.max(0,noise-1.5)/4);
         if(f==='bw'){
           const st=lumaStats(cur),P=Math.max(60,st.p90)/Math.pow(2,ex/100*1.2);
           usm(cur,clamp(Pm.sh+shp/100*.9,0,1.8)*nf,sig);
@@ -685,11 +685,11 @@ function PdfPreview({blob,password}){
 
 /* ---------- Camera ---------- */
 function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDone,onImport,onHome}){
-  const vref=useRef(),oref=useRef(),mrow=useRef(),smc=useRef(null),st=useRef({stream:null,caps:{},pts:null,still:0,armed:true,cool:0,torch:false,hint:'',hold:false,n:0,ic:null,photoCaps:undefined,noPhoto:false});
+  const vref=useRef(),oref=useRef(),mrow=useRef(),smc=useRef(null),st=useRef({stream:null,caps:{},pts:null,still:0,armed:true,cool:0,torch:false,hint:'',hold:false,n:0,ic:null,photoCaps:undefined,fails:0});
   const [err,setErr]=useState(''),[facing,setFacing]=useState('environment'),[flash,setFlash]=useState('auto'),[auto,setAuto]=useState(true),[live,setLive]=useState(false);
   const [ready,setReady]=useState(false),[cvOk,setCvOk]=useState(false),[caps,setCaps]=useState({}),[ev,setEv]=useState(0),[zoom,setZoom]=useState(1);
-  const [ring,setRing]=useState(null),[snap,setSnap]=useState(false),[retry,setRetry]=useState(0),[hint,setHint]=useState(''),[hq,setHq]=useState(true),[proc,setProc]=useState(false);
-  const cb=useRef({});cb.current={onCapture,mode,flash,auto,live,hq};
+  const [ring,setRing]=useState(null),[snap,setSnap]=useState(false),[retry,setRetry]=useState(0),[hint,setHint]=useState(''),[proc,setProc]=useState(false);
+  const cb=useRef({});cb.current={onCapture,mode,flash,auto,live};
   const shootRef=useRef();
   const md0=MODES.find(q=>q.k===mode);
   const initCv=()=>cvReady().then(()=>setCvOk(true)).catch(e=>setErr(e.message));
@@ -699,9 +699,9 @@ function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDo
     setReady(false);setErr('');
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){setErr('Camera is not available here. Open this page over HTTPS (or localhost) in a modern browser. You can still import from the gallery.');return}
     try{
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}},audio:false});
+      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:2560},height:{ideal:1440},frameRate:{ideal:30}},audio:false});
       if(dead){s.getTracks().forEach(t=>t.stop());return}
-      st.current.stream=s;st.current.torch=false;st.current.pts=null;st.current.still=0;st.current.ic=null;st.current.photoCaps=undefined;
+      st.current.stream=s;st.current.torch=false;st.current.pts=null;st.current.still=0;st.current.ic=null;st.current.photoCaps=undefined;st.current.fails=0;
       const v=vref.current;v.srcObject=s;await v.play();
       const tr=s.getVideoTracks()[0],c=tr.getCapabilities?tr.getCapabilities():{};
       st.current.caps=c;
@@ -718,21 +718,24 @@ function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDo
 
   useEffect(()=>{const el=mrow.current&&mrow.current.querySelector('[data-on="1"]');el&&el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'})},[mode]);
 
-  /* HD: sensor still (capped at 3200 px). FAST (or if the browser can't): the live video frame. */
+  /* Always HD: full sensor photo. If it fails or is too slow, the live video frame is used, so the shutter never gets stuck. */
   const grab=async()=>{
     const S=st.current,v=vref.current,tr=S.stream&&S.stream.getVideoTracks()[0];
-    if(cb.current.hq&&tr&&window.ImageCapture&&!S.noPhoto){
+    if(tr&&window.ImageCapture&&(S.fails||0)<3){
       try{
         if(!S.ic)S.ic=new ImageCapture(tr);
         if(S.photoCaps===undefined){try{S.photoCaps=await S.ic.getPhotoCapabilities()}catch{S.photoCaps=null}}
         const pc=S.photoCaps,opt={};
-        if(pc&&pc.imageWidth&&pc.imageHeight){const mw=pc.imageWidth.max,mh=pc.imageHeight.max,w=Math.min(mw,3200);opt.imageWidth=w;opt.imageHeight=Math.round(mh*w/mw)}
         if(pc&&Array.isArray(pc.fillLightMode)&&pc.fillLightMode.includes('off'))opt.fillLightMode='off';
-        const blob=await Promise.race([S.ic.takePhoto(opt),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),6000))]);
+        const tm=()=>new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000));
+        let blob;
+        try{blob=await Promise.race([S.ic.takePhoto(opt),tm()])}
+        catch(e1){blob=await Promise.race([S.ic.takePhoto(),tm()])}
         let c=await fileToCanvas(blob,MAXO);
         if(v.videoWidth<v.videoHeight&&c.width>c.height)c=rotCanvas(c);
+        S.fails=0;
         return c;
-      }catch(e){S.noPhoto=true}
+      }catch(e){S.fails=(S.fails||0)+1}
     }
     const c=$c(v.videoWidth,v.videoHeight);c.getContext('2d').drawImage(v,0,0);return c;
   };
@@ -807,7 +810,6 @@ function Camera({mode,setMode,split,setSplit,count,pend,lastThumb,onCapture,onDo
     <div className="flex h-14 shrink-0 items-center justify-between bg-black px-3 pt-[env(safe-area-inset-top)]">
       <button onClick={onHome} className={side} title="Home"><Icon n="home" c="h-7 w-7"/></button>
       <button onClick={()=>setFacing(f=>f==='environment'?'user':'environment')} className={side} title="Switch camera"><Icon n="flip" c="h-6 w-6"/></button>
-      <button onClick={()=>setHq(h=>!h)} className={'rounded-full px-3 py-1 text-xs font-bold transition active:scale-90 '+(hq?'bg-[#4aa3ff] text-black':'bg-white/15 text-white')} title="HD = sharper photo, FAST = quicker capture">{hq?'HD':'FAST'}</button>
       <div className={'grid h-8 w-12 place-items-center rounded-full '+(ready?'bg-green-500 text-white':err?'bg-red-500':'animate-pulse bg-yellow-400 text-black')} title={ready?'Camera on':err?'Camera off':'Starting camera'}><Icon n="camera" c="h-5 w-5"/></div>
     </div>
     <div className="relative flex-1 overflow-hidden bg-black" onClick={tap}>
